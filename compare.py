@@ -120,15 +120,24 @@ def load_cached_data() -> Tuple[Optional[List[dict]], Optional[List[dict]]]:
 
 def scrape_fresh_data() -> Tuple[List[ToyotaEdition], List[AyvensOffer]]:
     """Scrape fresh data from both sites."""
-    logger.info("Scraping fresh data from Toyota.nl and Ayvens...")
+    print("\n" + "="*70)
+    print("TOYOTA VS AYVENS PRICE COMPARISON - DATA COLLECTION")
+    print("="*70)
 
     # Scrape Toyota
+    print("\n>>> PHASE 1: SCRAPING TOYOTA.NL <<<\n")
     toyota_scraper = ToyotaScraper(headless=True)
     toyota_editions = toyota_scraper.scrape_all()
+    print(f"\nToyota scraping complete: {len(toyota_editions)} editions\n")
 
     # Scrape Ayvens
+    print("\n>>> PHASE 2: SCRAPING AYVENS <<<\n")
     ayvens_scraper = AyvensScraper(headless=True)
     ayvens_offers = ayvens_scraper.scrape_all()
+    print(f"\nAyvens scraping complete: {len(ayvens_offers)} offers\n")
+
+    print("\n>>> DATA COLLECTION COMPLETE <<<")
+    print("="*70 + "\n")
 
     return toyota_editions, ayvens_offers
 

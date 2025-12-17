@@ -13,6 +13,7 @@ import re
 import json
 import logging
 import time
+import os
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field, asdict
 from urllib.parse import urlencode, urlparse, parse_qs
@@ -282,19 +283,117 @@ class ToyotaScraper:
         params = f"?durationMonths={duration}&yearlyKilometers={km}"
         return base + params
 
+    def _extract_prices_from_model_page(self) -> List[Dict[str, Any]]:
+        """Extract all edition prices from model page cards."""
+        soup = BeautifulSoup(self.driver.page_source, 'lxml')
+        editions = []
+
+        # Find price elements with data-testid="price"
+        price_elements = soup.select('[data-testid*="price"]')
+        logger.debug(f"Found {len(price_elements)} price elements")
+
+        for elem in price_elements:
+            price_text = elem.get_text(strip=True)
+            # Extract price value (e.g., "€ 349,-" -> 349)
+            match = re.search(r'€\s*(\d+)', price_text)
+            if match:
+                price = float(match.group(1))
+                if 150 <= price <= 2000:
+                    # Try to find associated edition name
+                    parent = elem.find_parent(['div', 'article', 'section'])
+                    edition_name = ""
+                    if parent:
+                        # Look for edition name in parent
+                        name_elem = parent.select_one('[class*="title"], h2, h3, h4')
+                        if name_elem:
+                            edition_name = name_elem.get_text(strip=True)
+
+                    editions.append({
+                        'price': price,
+                        'edition_name': edition_name
+                    })
+
+        return editions
+
+    def _set_duration_km_dropdowns(self, duration: int, km: int) -> bool:
+        """Set the duration and km dropdowns using Selenium."""
+        try:
+            # Find all MUI NativeSelect elements
+            selects = self.driver.find_elements(By.CSS_SELECTOR, "select.MuiNativeSelect-select")
+
+            duration_set = False
+            km_set = False
+
+            for select in selects:
+                try:
+                    # Get current value to determine which dropdown this is
+                    options = select.find_elements(By.TAG_NAME, "option")
+                    option_texts = [opt.text for opt in options]
+
+                    # Check if this is duration dropdown (contains "maanden")
+                    if any('maanden' in t or 'maand' in t for t in option_texts):
+                        # Find the option matching our duration
+                        for opt in options:
+                            if str(duration) in opt.text:
+                                opt.click()
+                                duration_set = True
+                                break
+
+                    # Check if this is km dropdown (contains "km")
+                    elif any('km' in t.lower() for t in option_texts):
+                        # Find the option matching our km
+                        target_km_str = f"{km:,}".replace(",", ".")  # Format: 10.000
+                        for opt in options:
+                            opt_text = opt.text.replace(" ", "").replace(".", "")
+                            if str(km) in opt_text:
+                                opt.click()
+                                km_set = True
+                                break
+
+                except Exception as e:
+                    logger.debug(f"Error with select element: {e}")
+                    continue
+
+            if duration_set or km_set:
+                time.sleep(1)  # Wait for price update
+
+            return duration_set and km_set
+
+        except Exception as e:
+            logger.debug(f"Error setting dropdowns: {e}")
+            return False
+
     def _extract_price_from_page(self) -> Optional[float]:
-        """Extract the monthly price from the current configurator page."""
+        """Extract the monthly price from the current page."""
         soup = BeautifulSoup(self.driver.page_source, 'lxml')
 
-        # Look for price patterns
+        # Primary method: Look for data-testid="price" elements
+        price_elements = soup.select('[data-testid*="price"]')
+        for elem in price_elements:
+            price_text = elem.get_text(strip=True)
+            match = re.search(r'€\s*(\d+)', price_text)
+            if match:
+                price = float(match.group(1))
+                if 150 <= price <= 2000:
+                    return price
+
+        # Fallback: Look for MuiTypography with price pattern
+        mui_elements = soup.select('.MuiTypography-root')
+        for elem in mui_elements:
+            text = elem.get_text(strip=True)
+            match = re.search(r'€\s*(\d+)[,.-]*', text)
+            if match:
+                price = float(match.group(1))
+                if 150 <= price <= 2000:
+                    return price
+
+        # Last resort: Search all text for price patterns
         price_patterns = [
-            r'€\s*(\d+)[,.]?(\d{2})?\s*(?:p\.?\s*m\.?|per\s*maand|/\s*maand)',
-            r'(\d+)[,.](\d{2})\s*(?:p\.?\s*m\.?|per\s*maand)',
-            r'maandbedrag[:\s]*€?\s*(\d+)',
+            r'€\s*(\d+)[,.-]*\s*(?:p\.?\s*m\.?|per\s*maand|/\s*maand)',
+            r'(\d+)[,.](\d{2})\s*p/m',
         ]
 
         text = soup.get_text()
-
         for pattern in price_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
             for match in matches:
@@ -306,33 +405,10 @@ class ToyotaScraper:
                     else:
                         price = float(match)
 
-                    # Validate reasonable price range
                     if 150 <= price <= 2000:
                         return price
                 except (ValueError, TypeError):
                     continue
-
-        # Try finding price elements directly
-        price_selectors = [
-            '[class*="price"]',
-            '[class*="monthly"]',
-            '[data-testid*="price"]',
-        ]
-
-        for selector in price_selectors:
-            elements = soup.select(selector)
-            for elem in elements:
-                elem_text = elem.get_text()
-                match = re.search(r'€?\s*(\d+)[,.]?(\d{2})?', elem_text)
-                if match:
-                    try:
-                        whole = int(match.group(1))
-                        cents = int(match.group(2)) if match.group(2) else 0
-                        price = whole + cents / 100
-                        if 150 <= price <= 2000:
-                            return price
-                    except (ValueError, TypeError):
-                        continue
 
         return None
 
@@ -356,12 +432,87 @@ class ToyotaScraper:
 
         return price
 
-    def scrape_edition_prices(self, edition: ToyotaEdition) -> ToyotaEdition:
-        """Scrape the full price matrix for an edition."""
-        logger.info(f"Scraping prices for: {edition.model} - {edition.edition_name}")
+    def _scrape_model_page_prices(self, model_slug: str, model_name: str) -> List[ToyotaEdition]:
+        """Scrape all editions for a model by using the model page dropdowns."""
+        editions = []
+        edition_prices = {}  # {edition_index: {duration_km: price}}
+
+        model_url = f"{self.OVERVIEW_URL}/{model_slug}"
+        logger.info(f"Scraping prices from model page: {model_url}")
+
+        self._rate_limit()
+        self.driver.get(model_url)
+        self._wait_for_page_load()
+        self._accept_cookies()
+        time.sleep(2)
+
+        # First, get edition names/info from the initial page load
+        initial_prices = self._extract_prices_from_model_page()
+        num_editions = len(initial_prices)
+        logger.info(f"  Found {num_editions} editions on page")
+
+        if num_editions == 0:
+            return []
+
+        # Initialize edition data
+        for idx, ep in enumerate(initial_prices):
+            edition_prices[idx] = {}
+
+        # Now iterate through duration/km combinations
+        total_combos = len(DURATIONS) * len(MILEAGES)
+        combo_num = 0
 
         for duration in DURATIONS:
             for km in MILEAGES:
+                combo_num += 1
+                print(f"\r  {model_name}: {combo_num}/{total_combos} - {duration}mo/{km}km   ", end="", flush=True)
+
+                # Set the dropdowns
+                if not self._set_duration_km_dropdowns(duration, km):
+                    logger.debug(f"Could not set dropdowns for {duration}/{km}")
+
+                # Wait for prices to update
+                time.sleep(0.5)
+
+                # Extract current prices
+                current_prices = self._extract_prices_from_model_page()
+
+                # Store prices for each edition
+                for idx, ep in enumerate(current_prices):
+                    if idx < num_editions:
+                        edition_prices[idx][f"{duration}_{km}"] = ep['price']
+
+        print(f"\r  {model_name}: Complete - {num_editions} editions                          ")
+
+        # Create ToyotaEdition objects
+        for idx, ed_data in enumerate(initial_prices):
+            edition = ToyotaEdition(
+                model=model_name,
+                edition_name=ed_data.get('edition_name', f"{model_name} Edition {idx+1}"),
+                edition_slug=f"toyota-{model_slug}-{idx}",
+                fuel_type="Hybrid",
+                transmission="Automatic",
+                base_url=model_url,
+                price_matrix=edition_prices.get(idx, {})
+            )
+            if edition.price_matrix:
+                editions.append(edition)
+
+        return editions
+
+    def scrape_edition_prices(self, edition: ToyotaEdition, edition_num: int = 0, total_editions: int = 0) -> ToyotaEdition:
+        """Scrape the full price matrix for an edition."""
+        total_combinations = len(DURATIONS) * len(MILEAGES)
+        current_combo = 0
+
+        for duration in DURATIONS:
+            for km in MILEAGES:
+                current_combo += 1
+                # Print progress
+                progress_pct = (current_combo / total_combinations) * 100
+                edition_info = f"[{edition_num}/{total_editions}]" if total_editions > 0 else ""
+                print(f"\r{edition_info} {edition.model}: {current_combo}/{total_combinations} ({progress_pct:.0f}%) - {duration}mo/{km}km   ", end="", flush=True)
+
                 price = self._scrape_price_for_combination(
                     edition.edition_slug, duration, km
                 )
@@ -369,8 +520,8 @@ class ToyotaScraper:
                     edition.set_price(duration, km, price)
 
         prices_found = len(edition.price_matrix)
-        total_combinations = len(DURATIONS) * len(MILEAGES)
-        logger.info(f"  Found {prices_found}/{total_combinations} prices")
+        print(f"\r{edition.model}: {prices_found}/{total_combinations} prices found                                    ")
+        logger.info(f"  Found {prices_found}/{total_combinations} prices for {edition.model}")
 
         return edition
 
@@ -379,21 +530,25 @@ class ToyotaScraper:
         logger.info("Starting Toyota.nl private lease scrape")
 
         try:
-            editions = self._discover_editions()
+            all_editions = []
 
-            if not editions:
-                logger.warning("No editions discovered, trying direct URL approach")
-                editions = self._try_direct_models()
+            # Use the new model page approach - scrape each model page directly
+            print("\n" + "="*60)
+            print("Scraping Toyota.nl Private Lease - Model Page Approach")
+            print("="*60 + "\n")
 
-            results = []
-            for i, edition in enumerate(editions):
-                logger.info(f"Processing edition {i+1}/{len(editions)}: {edition.model}")
-                scraped = self.scrape_edition_prices(edition)
-                if scraped.price_matrix:
-                    results.append(scraped)
+            for model_slug, model_name in self.KNOWN_MODELS:
+                print(f"\nProcessing: {model_name}")
+                editions = self._scrape_model_page_prices(model_slug, model_name)
 
-            logger.info(f"Completed scraping {len(results)} editions with prices")
-            return results
+                if editions:
+                    all_editions.extend(editions)
+                    logger.info(f"  Got {len(editions)} editions for {model_name}")
+                else:
+                    logger.info(f"  No editions found for {model_name}")
+
+            logger.info(f"Completed scraping {len(all_editions)} editions with prices")
+            return all_editions
 
         finally:
             self.close()
@@ -436,43 +591,67 @@ class ToyotaScraper:
         return editions
 
 
+def load_progress(output_file: str = "output/toyota_prices.json") -> Dict[str, dict]:
+    """Load existing progress from JSON file."""
+    if os.path.exists(output_file):
+        try:
+            with open(output_file, 'r') as f:
+                data = json.load(f)
+            # Index by edition_slug for quick lookup
+            return {item['edition_slug']: item for item in data}
+        except (json.JSONDecodeError, KeyError):
+            return {}
+    return {}
+
+
+def save_progress(editions: List[ToyotaEdition], output_file: str = "output/toyota_prices.json"):
+    """Save current progress to JSON file."""
+    import os
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    output = [asdict(e) for e in editions]
+    with open(output_file, 'w') as f:
+        json.dump(output, f, indent=2)
+
+
 def main():
     """Main entry point."""
+    output_file = "output/toyota_prices.json"
+
     scraper = ToyotaScraper(headless=True)
 
     try:
+        # Use the new scrape_all method which uses model page approach
         editions = scraper.scrape_all()
 
-        # Print summary
-        print("\n" + "="*60)
-        print("Toyota Private Lease Price Matrix")
-        print("="*60)
+        if editions:
+            # Save results
+            save_progress(editions, output_file)
 
-        for edition in editions:
-            print(f"\n{edition.model} - {edition.edition_name}")
-            print(f"  Fuel: {edition.fuel_type}, Trans: {edition.transmission}")
-            print(f"  Prices found: {len(edition.price_matrix)}")
+            # Print summary
+            print("\n" + "="*60)
+            print("Toyota Private Lease Price Matrix")
+            print("="*60)
 
-            if edition.price_matrix:
-                # Show sample prices
-                for duration in DURATIONS[:3]:
-                    for km in MILEAGES[:2]:
-                        price = edition.get_price(duration, km)
-                        if price:
-                            print(f"    {duration}mo/{km}km: €{price}/mo")
+            for edition in editions:
+                print(f"\n{edition.model} - {edition.edition_name}")
+                print(f"  Fuel: {edition.fuel_type}, Trans: {edition.transmission}")
+                print(f"  Prices found: {len(edition.price_matrix)}")
 
-        # Save to JSON
-        output = []
-        for edition in editions:
-            output.append(asdict(edition))
+                if edition.price_matrix:
+                    # Show sample prices
+                    for duration in DURATIONS[:3]:
+                        for km in MILEAGES[:2]:
+                            price = edition.get_price(duration, km)
+                            if price:
+                                print(f"    {duration}mo/{km}km: €{price}/mo")
 
-        with open("output/toyota_prices.json", "w") as f:
-            json.dump(output, f, indent=2)
+            print(f"\nSaved {len(editions)} editions to {output_file}")
+        else:
+            print("No editions found!")
 
-        print(f"\nSaved {len(editions)} editions to output/toyota_prices.json")
-
-    finally:
-        scraper.close()
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        raise
 
 
 if __name__ == "__main__":
