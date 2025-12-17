@@ -283,6 +283,86 @@ class ToyotaScraper:
         params = f"?durationMonths={duration}&yearlyKilometers={km}"
         return base + params
 
+    # Known Toyota edition/trim names
+    KNOWN_EDITIONS = [
+        'Active', 'Comfort', 'Dynamic', 'Executive', 'GR-Sport', 'GR Sport',
+        'Style', 'First Edition', 'Premium', 'Lounge', 'Adventure', 'Team D',
+        'Play', 'Limited', 'Pulse', 'Pure', 'Flow', 'Beyond', 'Trek'
+    ]
+
+    def _is_price_text(self, text: str) -> bool:
+        """Check if text appears to be a price rather than an edition name."""
+        if not text:
+            return False
+        # Common price patterns in Dutch
+        price_patterns = [
+            r'€',              # Euro symbol
+            r'EUR',            # EUR text
+            r'\d+,-',          # "299,-" format
+            r'\d+,\d{2}',      # "299,00" format
+            r'per\s*maand',    # "per maand"
+            r'p/m',            # "p/m"
+            r'incl\.?\s*btw',  # "incl btw"
+            r'vanaf',          # "vanaf"
+            r'^\d+$',          # Just a number
+        ]
+        for pattern in price_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+        return False
+
+    def _extract_edition_name_from_element(self, elem) -> str:
+        """Extract a clean edition name from an element, avoiding prices."""
+        # Go up to find a card-like container
+        card = elem
+        for _ in range(10):  # Search up to 10 levels
+            parent = card.find_parent()
+            if not parent:
+                break
+            parent_class = ' '.join(parent.get('class', []))
+            if any(k in parent_class.lower() for k in ['card', 'item', 'product', 'edition']):
+                card = parent
+                break
+            card = parent
+
+        # Search for edition name in the card
+        text_content = card.get_text(' ', strip=True)
+
+        # Try to find known edition names first
+        for edition in self.KNOWN_EDITIONS:
+            if edition.lower() in text_content.lower():
+                # Return normalized edition name
+                if edition.lower() == 'gr sport':
+                    return 'GR-Sport'
+                return edition
+
+        # Look for h2, h3, h4 elements that don't contain price patterns
+        for heading in card.find_all(['h2', 'h3', 'h4', 'h5']):
+            heading_text = heading.get_text(strip=True)
+            # Skip if it contains price pattern
+            if self._is_price_text(heading_text):
+                continue
+            # Skip if it's just a number
+            if re.match(r'^[\d\s.,]+$', heading_text):
+                continue
+            # Skip very short strings that are likely not edition names
+            if len(heading_text) < 3:
+                continue
+            # This is likely an edition name
+            return heading_text
+
+        # Try finding text in elements with specific classes
+        for class_pattern in ['name', 'title', 'heading', 'edition', 'variant', 'trim']:
+            for elem_with_class in card.select(f'[class*="{class_pattern}"]'):
+                text = elem_with_class.get_text(strip=True)
+                # Skip price patterns
+                if self._is_price_text(text):
+                    continue
+                if len(text) >= 3 and len(text) <= 50:
+                    return text
+
+        return ""
+
     def _extract_prices_from_model_page(self) -> List[Dict[str, Any]]:
         """Extract all edition prices from model page cards."""
         soup = BeautifulSoup(self.driver.page_source, 'lxml')
@@ -292,6 +372,8 @@ class ToyotaScraper:
         price_elements = soup.select('[data-testid*="price"]')
         logger.debug(f"Found {len(price_elements)} price elements")
 
+        seen_editions = set()  # Track to avoid duplicates
+
         for elem in price_elements:
             price_text = elem.get_text(strip=True)
             # Extract price value (e.g., "€ 349,-" -> 349)
@@ -299,14 +381,18 @@ class ToyotaScraper:
             if match:
                 price = float(match.group(1))
                 if 150 <= price <= 2000:
-                    # Try to find associated edition name
-                    parent = elem.find_parent(['div', 'article', 'section'])
-                    edition_name = ""
-                    if parent:
-                        # Look for edition name in parent
-                        name_elem = parent.select_one('[class*="title"], h2, h3, h4')
-                        if name_elem:
-                            edition_name = name_elem.get_text(strip=True)
+                    # Extract proper edition name
+                    edition_name = self._extract_edition_name_from_element(elem)
+
+                    # Double-check: if edition_name still looks like a price, clear it
+                    if edition_name and self._is_price_text(edition_name):
+                        edition_name = ""
+
+                    # Create a key to deduplicate
+                    key = edition_name if edition_name else f"edition_{len(editions)}"
+                    if key in seen_editions:
+                        continue
+                    seen_editions.add(key)
 
                     editions.append({
                         'price': price,
@@ -486,9 +572,14 @@ class ToyotaScraper:
 
         # Create ToyotaEdition objects
         for idx, ed_data in enumerate(initial_prices):
+            # Use edition_name if valid, otherwise use numbered fallback
+            edition_name = ed_data.get('edition_name', '')
+            if not edition_name or self._is_price_text(edition_name):
+                edition_name = f"Edition {idx+1}"
+
             edition = ToyotaEdition(
                 model=model_name,
-                edition_name=ed_data.get('edition_name', f"{model_name} Edition {idx+1}"),
+                edition_name=edition_name,
                 edition_slug=f"toyota-{model_slug}-{idx}",
                 fuel_type="Hybrid",
                 transmission="Automatic",

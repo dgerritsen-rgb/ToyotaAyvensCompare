@@ -51,6 +51,8 @@ class AyvensOffer:
     power: Optional[str] = None
     offer_url: Optional[str] = None
     price_matrix: Dict[str, float] = field(default_factory=dict)  # "duration_km" -> price
+    is_new: bool = True  # True = build-to-order, False = used car
+    edition_name: str = ""  # Clean edition name for matching (e.g., "Active", "GR-Sport")
 
     def get_price(self, duration: int, km: int) -> Optional[float]:
         """Get price for specific duration/km combination."""
@@ -106,6 +108,53 @@ class AyvensScraper:
             time.sleep(self.REQUEST_DELAY - elapsed)
         self._last_request_time = time.time()
 
+    @staticmethod
+    def _is_used_car(variant: str) -> bool:
+        """Detect if a vehicle is used based on variant text."""
+        variant_lower = variant.lower()
+        used_indicators = [
+            'kilometerstand',  # Odometer reading
+            '1e tenaamstelling',  # First registration date
+            'bouwjaar',  # Build year
+            'km ',  # Mileage indicator
+        ]
+        return any(indicator in variant_lower for indicator in used_indicators)
+
+    @staticmethod
+    def _extract_edition_name(variant: str) -> str:
+        """Extract clean edition name from variant text."""
+        # Common Toyota edition names
+        edition_patterns = [
+            r'\b(Active|Comfort|Dynamic|Executive|GR[- ]?Sport|Style|First|Edition|Premium|Lounge)\b',
+        ]
+
+        for pattern in edition_patterns:
+            match = re.search(pattern, variant, re.IGNORECASE)
+            if match:
+                edition = match.group(1).strip()
+                # Normalize GR-Sport variants
+                if edition.upper().startswith('GR'):
+                    return 'GR-Sport'
+                return edition.title()
+
+        return ""
+
+    @staticmethod
+    def _extract_power_kw(variant: str) -> Optional[int]:
+        """Extract power in kW from variant text."""
+        # Look for patterns like "140", "115", "130" which indicate power
+        # Or "85 kW", "103 kW"
+        kw_match = re.search(r'(\d{2,3})\s*kW', variant)
+        if kw_match:
+            return int(kw_match.group(1))
+
+        # Look for power indicator at start (e.g., "140 Active")
+        power_match = re.search(r'^(\d{3})\s+\w', variant)
+        if power_match:
+            return int(power_match.group(1))
+
+        return None
+
     def _wait_for_page_load(self, timeout: int = 15):
         """Wait for page to be fully loaded."""
         try:
@@ -150,7 +199,13 @@ class AyvensScraper:
                 price_text = price_elem.get_text(strip=True)
                 match = re.search(r'€\s*(\d+)', price_text)
                 if match:
-                    return float(match.group(1))
+                    price = float(match.group(1))
+                    # Validate price is in reasonable range for private lease
+                    if 100 <= price <= 2000:
+                        return price
+                    else:
+                        logger.debug(f"Price {price} outside valid range, ignoring")
+                        return None
         except Exception as e:
             logger.debug(f"Error getting price: {e}")
         return None
@@ -447,6 +502,29 @@ class AyvensScraper:
             logger.error(f"Error discovering vehicles: {e}")
             return []
 
+    def _has_configurable_sliders(self) -> bool:
+        """Check if the current page has configurable duration/mileage sliders."""
+        try:
+            sliders = self.driver.find_elements(By.CSS_SELECTOR, "[role='slider']")
+            duration_slider = False
+            mileage_slider = False
+
+            for slider in sliders:
+                try:
+                    min_val = int(slider.get_attribute('aria-valuemin') or 0)
+                    max_val = int(slider.get_attribute('aria-valuemax') or 0)
+
+                    if min_val == 12 and max_val == 72:
+                        duration_slider = True
+                    elif min_val == 5000 and max_val == 30000:
+                        mileage_slider = True
+                except (ValueError, TypeError):
+                    continue
+
+            return duration_slider and mileage_slider
+        except Exception:
+            return False
+
     def _scrape_vehicle_prices(self, vehicle: Dict[str, Any]) -> Dict[str, float]:
         """Scrape all price combinations for a vehicle."""
         price_matrix = {}
@@ -465,6 +543,11 @@ class AyvensScraper:
                 key = f"{duration}_{mileage}"
                 price_matrix[key] = initial_price
                 logger.debug(f"Initial: {duration}mo/{mileage}km = €{initial_price}")
+
+            # Check if this vehicle has configurable sliders (new cars do, used cars may not)
+            if not self._has_configurable_sliders():
+                logger.debug(f"No configurable sliders found for {vehicle['model']} - likely a used car")
+                return price_matrix
 
             # Try to set different duration/mileage combinations
             # Note: This is a simplified approach - the actual slider interaction may need refinement
@@ -515,28 +598,25 @@ class AyvensScraper:
             for i, vehicle in enumerate(vehicles):
                 logger.info(f"Processing vehicle {i+1}/{len(vehicles)}: Toyota {vehicle['model']} ({vehicle.get('variant', '')})")
 
-                # Scrape prices
-                self._rate_limit()
-                self.driver.get(vehicle['url'])
-                self._wait_for_page_load()
-                time.sleep(2)
+                # Scrape full price matrix by iterating through all slider combinations
+                price_matrix = self._scrape_vehicle_prices(vehicle)
 
-                price = self._get_current_price()
-                duration, mileage = self._get_slider_values()
+                logger.info(f"  Captured {len(price_matrix)} price points")
 
-                price_matrix = {}
-                if price and duration and mileage:
-                    price_matrix[f"{duration}_{mileage}"] = price
-                    logger.info(f"  Default price: €{price}/mo at {duration}mo/{mileage}km")
+                variant_text = vehicle.get('variant', '')
+                is_new = not self._is_used_car(variant_text)
+                edition_name = self._extract_edition_name(variant_text)
 
                 offer = AyvensOffer(
                     model=vehicle['model'],
-                    variant=vehicle.get('variant', ''),
+                    variant=variant_text,
                     fuel_type=vehicle['fuel_type'],
                     transmission="Automatic",
                     vehicle_id=vehicle['vehicle_id'],
                     offer_url=vehicle['url'],
-                    price_matrix=price_matrix
+                    price_matrix=price_matrix,
+                    is_new=is_new,
+                    edition_name=edition_name
                 )
 
                 offers.append(offer)

@@ -61,7 +61,7 @@ class ModelMatcher:
         'urban cruiser': ['urban cruiser', 'urban-cruiser'],
         'corolla': ['corolla'],
         'corolla hatchback': ['corolla', 'corolla hatchback'],
-        'corolla touring sports': ['corolla touring', 'corolla ts'],
+        'corolla touring sports': ['corolla touring', 'corolla ts', 'corolla touring sports'],
         'corolla cross': ['corolla cross', 'corolla-cross'],
         'c-hr': ['c-hr', 'chr'],
         'rav4': ['rav4', 'rav-4'],
@@ -69,10 +69,67 @@ class ModelMatcher:
         'land cruiser': ['land cruiser', 'landcruiser'],
     }
 
+    # Edition name mappings (Toyota.nl edition -> Ayvens patterns)
+    EDITION_ALIASES = {
+        'active': ['active'],
+        'comfort': ['comfort'],
+        'dynamic': ['dynamic'],
+        'executive': ['executive'],
+        'gr-sport': ['gr-sport', 'gr sport', 'grsport'],
+        'style': ['style'],
+        'first edition': ['first edition', 'first'],
+        'premium': ['premium'],
+        'lounge': ['lounge'],
+    }
+
     @classmethod
     def normalize_model(cls, model: str) -> str:
         """Normalize model name for matching."""
         return model.lower().strip().replace('-', ' ')
+
+    @classmethod
+    def normalize_edition(cls, edition: str) -> str:
+        """Normalize edition name for matching."""
+        return edition.lower().strip().replace('-', ' ')
+
+    @classmethod
+    def is_valid_edition_name(cls, edition: str) -> bool:
+        """Check if edition name is valid (not a price or empty)."""
+        if not edition:
+            return False
+        # Skip if it looks like a price
+        price_patterns = [r'€', r'\d+,-', r'\d+,\d{2}', r'vanaf', r'per maand', r'p/m']
+        import re
+        for pattern in price_patterns:
+            if re.search(pattern, edition, re.IGNORECASE):
+                return False
+        return True
+
+    @classmethod
+    def extract_edition(cls, variant: str) -> str:
+        """Extract edition name from variant string."""
+        import re
+        variant_lower = variant.lower()
+
+        # Look for known edition names
+        for edition, aliases in cls.EDITION_ALIASES.items():
+            for alias in aliases:
+                if alias in variant_lower:
+                    return edition
+
+        # Try to extract from patterns like "1.5 Hybrid Active" or "140 Active"
+        patterns = [
+            r'\b(active|comfort|dynamic|executive|gr[ -]?sport|style|first|premium|lounge)\b',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, variant_lower)
+            if match:
+                edition = match.group(1).replace(' ', '-')
+                if edition.startswith('gr'):
+                    return 'gr-sport'
+                return edition
+
+        return ""
 
     @classmethod
     def models_match(cls, toyota_model: str, ayvens_model: str) -> bool:
@@ -95,6 +152,39 @@ class ModelMatcher:
             return True
 
         return False
+
+    @classmethod
+    def editions_match(cls, toyota_edition: str, ayvens_edition: str) -> bool:
+        """Check if two edition names match."""
+        toyota_norm = cls.normalize_edition(toyota_edition)
+        ayvens_norm = cls.normalize_edition(ayvens_edition)
+
+        # Empty matches empty
+        if not toyota_norm and not ayvens_norm:
+            return True
+
+        # Direct match
+        if toyota_norm == ayvens_norm:
+            return True
+
+        # Check aliases
+        for base_edition, aliases in cls.EDITION_ALIASES.items():
+            if toyota_norm in aliases or toyota_norm == base_edition:
+                if ayvens_norm in aliases or ayvens_norm == base_edition:
+                    return True
+
+        return False
+
+    @classmethod
+    def is_used_car(cls, variant: str) -> bool:
+        """Detect if a vehicle is used based on variant text."""
+        variant_lower = variant.lower()
+        used_indicators = [
+            'kilometerstand',
+            '1e tenaamstelling',
+            'bouwjaar',
+        ]
+        return any(indicator in variant_lower for indicator in used_indicators)
 
 
 def load_cached_data() -> Tuple[Optional[List[dict]], Optional[List[dict]]]:
@@ -142,21 +232,74 @@ def scrape_fresh_data() -> Tuple[List[ToyotaEdition], List[AyvensOffer]]:
     return toyota_editions, ayvens_offers
 
 
-def match_editions(toyota_editions: List[dict], ayvens_offers: List[dict]) -> List[Tuple[dict, dict]]:
-    """Match Toyota editions with Ayvens offers."""
+def match_editions(toyota_editions: List[dict], ayvens_offers: List[dict], new_only: bool = True) -> List[Tuple[dict, dict]]:
+    """Match Toyota editions with Ayvens offers.
+
+    Args:
+        toyota_editions: List of Toyota editions
+        ayvens_offers: List of Ayvens offers
+        new_only: If True, only include new (build-to-order) Ayvens vehicles
+    """
     matches = []
+
+    # Filter Ayvens to new cars only if requested
+    if new_only:
+        filtered_ayvens = []
+        for ayvens in ayvens_offers:
+            # Check using is_new field if available, otherwise use variant text detection
+            is_new = ayvens.get('is_new', True)  # Default to True for backward compatibility
+            variant = ayvens.get('variant', '')
+
+            # Double-check with variant text
+            if ModelMatcher.is_used_car(variant):
+                is_new = False
+
+            if is_new:
+                filtered_ayvens.append(ayvens)
+
+        logger.info(f"Filtered to {len(filtered_ayvens)} new Ayvens vehicles (from {len(ayvens_offers)} total)")
+        ayvens_offers = filtered_ayvens
 
     for toyota in toyota_editions:
         toyota_model = toyota.get('model', '')
+        toyota_edition = toyota.get('edition_name', '')
+
+        # Check if Toyota edition is valid (not a price string)
+        toyota_edition_valid = ModelMatcher.is_valid_edition_name(toyota_edition)
 
         for ayvens in ayvens_offers:
             ayvens_model = ayvens.get('model', '')
+            ayvens_variant = ayvens.get('variant', '')
+            ayvens_edition = ayvens.get('edition_name', '') or ModelMatcher.extract_edition(ayvens_variant)
 
-            if ModelMatcher.models_match(toyota_model, ayvens_model):
+            # Check if Ayvens edition is valid
+            ayvens_edition_valid = ModelMatcher.is_valid_edition_name(ayvens_edition)
+
+            # Match by model
+            if not ModelMatcher.models_match(toyota_model, ayvens_model):
+                continue
+
+            # Match by edition if both have valid edition names
+            if toyota_edition_valid and ayvens_edition_valid:
+                if ModelMatcher.editions_match(toyota_edition, ayvens_edition):
+                    matches.append((toyota, ayvens))
+            elif not ayvens_edition_valid:
+                # If Ayvens doesn't have valid edition info, match by model only
+                matches.append((toyota, ayvens))
+            elif not toyota_edition_valid:
+                # If Toyota doesn't have valid edition info (e.g., price as name), match by model only
                 matches.append((toyota, ayvens))
 
-    logger.info(f"Found {len(matches)} model matches")
+    logger.info(f"Found {len(matches)} model+edition matches")
     return matches
+
+
+def is_valid_price(price: Optional[float]) -> bool:
+    """Check if a price is valid (within reasonable range for private lease)."""
+    if price is None:
+        return False
+    # Private lease prices typically range from €150-€2000/month
+    return 100 <= price <= 2000
 
 
 def compare_prices(matches: List[Tuple[dict, dict]]) -> List[PriceComparison]:
@@ -173,6 +316,12 @@ def compare_prices(matches: List[Tuple[dict, dict]]) -> List[PriceComparison]:
 
                 toyota_price = toyota_prices.get(key)
                 ayvens_price = ayvens_prices.get(key)
+
+                # Filter out invalid prices (like 1.0 from slider issues)
+                if not is_valid_price(toyota_price):
+                    toyota_price = None
+                if not is_valid_price(ayvens_price):
+                    ayvens_price = None
 
                 difference = None
                 difference_pct = None
@@ -201,10 +350,11 @@ def compare_prices(matches: List[Tuple[dict, dict]]) -> List[PriceComparison]:
 def generate_report(comparisons: List[PriceComparison]) -> str:
     """Generate a text report of the price comparison."""
     report_lines = [
-        "=" * 70,
+        "=" * 80,
         "TOYOTA.NL vs AYVENS PRIVATE LEASE PRICE COMPARISON",
+        "NEW VEHICLES ONLY (Build-to-Order)",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-        "=" * 70,
+        "=" * 80,
         "",
     ]
 
@@ -217,53 +367,84 @@ def generate_report(comparisons: List[PriceComparison]) -> str:
         same_price = len(valid_comparisons) - toyota_cheaper - ayvens_cheaper
 
         avg_diff = sum(c.difference for c in valid_comparisons) / len(valid_comparisons)
+        max_toyota_saving = max((c.difference for c in valid_comparisons if c.difference > 0), default=0)
+        max_ayvens_saving = min((c.difference for c in valid_comparisons if c.difference < 0), default=0)
 
         report_lines.extend([
-            "SUMMARY",
-            "-" * 70,
+            "OVERALL SUMMARY",
+            "-" * 80,
             f"Total price points compared: {len(valid_comparisons)}",
             f"Toyota.nl cheaper: {toyota_cheaper} ({100*toyota_cheaper/len(valid_comparisons):.1f}%)",
             f"Ayvens cheaper: {ayvens_cheaper} ({100*ayvens_cheaper/len(valid_comparisons):.1f}%)",
             f"Same price (±€1): {same_price}",
             f"Average difference: €{avg_diff:+.2f}/mo (positive = Toyota cheaper)",
+            f"Max Toyota saving: €{max_toyota_saving:.0f}/mo",
+            f"Max Ayvens saving: €{abs(max_ayvens_saving):.0f}/mo",
             "",
         ])
 
-    # Group by model
-    models = {}
+    # Group by model and edition
+    model_editions = {}
     for c in comparisons:
-        if c.model not in models:
-            models[c.model] = []
-        models[c.model].append(c)
+        key = (c.model, c.toyota_variant, c.ayvens_variant)
+        if key not in model_editions:
+            model_editions[key] = []
+        model_editions[key].append(c)
 
-    for model, model_comparisons in sorted(models.items()):
+    # Sort by model name
+    sorted_keys = sorted(model_editions.keys(), key=lambda x: (x[0], x[1]))
+
+    current_model = None
+    for (model, toyota_variant, ayvens_variant), edition_comparisons in [(k, model_editions[k]) for k in sorted_keys]:
+        # Model header
+        if model != current_model:
+            current_model = model
+            report_lines.extend([
+                "",
+                "=" * 80,
+                f"MODEL: {model.upper()}",
+                "=" * 80,
+            ])
+
+        # Edition header
         report_lines.extend([
             "",
-            f"MODEL: {model.upper()}",
-            "-" * 70,
+            f"  Edition: {toyota_variant}",
+            f"  Matched with: {ayvens_variant[:60]}..." if len(ayvens_variant) > 60 else f"  Matched with: {ayvens_variant}",
+            "",
         ])
 
-        # Show price matrix
-        report_lines.append("\nPrice Comparison (€/month):")
-        report_lines.append(f"{'Duration':<10} {'KM/Year':<10} {'Toyota':<12} {'Ayvens':<12} {'Diff':<10} {'Winner':<10}")
-        report_lines.append("-" * 64)
+        # Price comparison table
+        report_lines.append(f"    {'Duration':<8} {'KM/Year':<10} {'Toyota':<10} {'Ayvens':<10} {'Diff':<10} {'Winner':<10}")
+        report_lines.append("    " + "-" * 58)
 
-        for c in model_comparisons:
-            if c.toyota_price or c.ayvens_price:
-                toyota_str = f"€{c.toyota_price:.0f}" if c.toyota_price else "N/A"
-                ayvens_str = f"€{c.ayvens_price:.0f}" if c.ayvens_price else "N/A"
-                diff_str = f"€{c.difference:+.0f}" if c.difference else "N/A"
-                winner = c.cheaper_at or "N/A"
+        valid_edition = [c for c in edition_comparisons if c.toyota_price and c.ayvens_price]
+        for c in valid_edition:
+            toyota_str = f"€{c.toyota_price:.0f}"
+            ayvens_str = f"€{c.ayvens_price:.0f}"
+            diff_str = f"€{c.difference:+.0f}"
+            winner = c.cheaper_at or "Same"
 
-                report_lines.append(
-                    f"{c.duration:<10} {c.km_per_year:<10} {toyota_str:<12} {ayvens_str:<12} {diff_str:<10} {winner:<10}"
-                )
+            report_lines.append(
+                f"    {c.duration:<8} {c.km_per_year:<10} {toyota_str:<10} {ayvens_str:<10} {diff_str:<10} {winner:<10}"
+            )
+
+        # Edition summary
+        if valid_edition:
+            edition_avg = sum(c.difference for c in valid_edition) / len(valid_edition)
+            cheaper_count = sum(1 for c in valid_edition if c.difference > 0)
+            report_lines.append("")
+            report_lines.append(f"    Summary: Avg diff €{edition_avg:+.0f}/mo | Toyota cheaper in {cheaper_count}/{len(valid_edition)} cases")
 
     report_lines.extend([
         "",
-        "=" * 70,
+        "=" * 80,
+        "LEGEND:",
+        "  - Positive difference = Toyota is MORE expensive (Ayvens saves money)",
+        "  - Negative difference = Ayvens is MORE expensive (Toyota saves money)",
+        "=" * 80,
         "END OF REPORT",
-        "=" * 70,
+        "=" * 80,
     ])
 
     return "\n".join(report_lines)
