@@ -260,35 +260,67 @@ def match_editions(toyota_editions: List[dict], ayvens_offers: List[dict], new_o
         logger.info(f"Filtered to {len(filtered_ayvens)} new Ayvens vehicles (from {len(ayvens_offers)} total)")
         ayvens_offers = filtered_ayvens
 
+    # Group by model first to avoid cross-matching
+    toyota_by_model = {}
+    for t in toyota_editions:
+        model = ModelMatcher.normalize_model(t.get('model', ''))
+        if model not in toyota_by_model:
+            toyota_by_model[model] = []
+        toyota_by_model[model].append(t)
+
+    ayvens_by_model = {}
+    for a in ayvens_offers:
+        model = ModelMatcher.normalize_model(a.get('model', ''))
+        if model not in ayvens_by_model:
+            ayvens_by_model[model] = []
+        ayvens_by_model[model].append(a)
+
+    # Track which Ayvens offers have been matched to avoid duplicates
+    matched_ayvens_ids = set()
+
     for toyota in toyota_editions:
         toyota_model = toyota.get('model', '')
+        toyota_model_norm = ModelMatcher.normalize_model(toyota_model)
         toyota_edition = toyota.get('edition_name', '')
-
-        # Check if Toyota edition is valid (not a price string)
         toyota_edition_valid = ModelMatcher.is_valid_edition_name(toyota_edition)
 
-        for ayvens in ayvens_offers:
-            ayvens_model = ayvens.get('model', '')
+        # Find matching Ayvens model group
+        matching_ayvens = []
+        for ayvens_model_norm, ayvens_list in ayvens_by_model.items():
+            if ModelMatcher.models_match(toyota_model, ayvens_list[0].get('model', '')):
+                matching_ayvens.extend(ayvens_list)
+
+        if not matching_ayvens:
+            continue
+
+        # Try to find the best match
+        best_match = None
+
+        for ayvens in matching_ayvens:
+            ayvens_id = ayvens.get('vehicle_id', id(ayvens))
+            if ayvens_id in matched_ayvens_ids:
+                continue  # Already matched
+
             ayvens_variant = ayvens.get('variant', '')
             ayvens_edition = ayvens.get('edition_name', '') or ModelMatcher.extract_edition(ayvens_variant)
-
-            # Check if Ayvens edition is valid
             ayvens_edition_valid = ModelMatcher.is_valid_edition_name(ayvens_edition)
 
-            # Match by model
-            if not ModelMatcher.models_match(toyota_model, ayvens_model):
-                continue
-
-            # Match by edition if both have valid edition names
+            # If both have valid edition names, only match if they match
             if toyota_edition_valid and ayvens_edition_valid:
                 if ModelMatcher.editions_match(toyota_edition, ayvens_edition):
-                    matches.append((toyota, ayvens))
-            elif not ayvens_edition_valid:
-                # If Ayvens doesn't have valid edition info, match by model only
-                matches.append((toyota, ayvens))
-            elif not toyota_edition_valid:
-                # If Toyota doesn't have valid edition info (e.g., price as name), match by model only
-                matches.append((toyota, ayvens))
+                    best_match = ayvens
+                    break
+            elif ayvens_edition_valid:
+                # Toyota invalid, Ayvens valid - take first available Ayvens
+                best_match = ayvens
+                break
+            elif not best_match:
+                # Both invalid - take first available
+                best_match = ayvens
+
+        if best_match:
+            matches.append((toyota, best_match))
+            matched_ayvens_ids.add(best_match.get('vehicle_id', id(best_match)))
 
     logger.info(f"Found {len(matches)} model+edition matches")
     return matches
@@ -383,20 +415,27 @@ def generate_report(comparisons: List[PriceComparison]) -> str:
             "",
         ])
 
-    # Group by model and edition
+    # Group by model and edition, filtering to only those with valid comparisons
     model_editions = {}
     for c in comparisons:
+        # Only include if both prices are valid
+        if not (c.toyota_price and c.ayvens_price):
+            continue
         key = (c.model, c.toyota_variant, c.ayvens_variant)
         if key not in model_editions:
             model_editions[key] = []
         model_editions[key].append(c)
 
-    # Sort by model name
-    sorted_keys = sorted(model_editions.keys(), key=lambda x: (x[0], x[1]))
+    # Sort by model name, then by Ayvens variant (which has the actual edition name)
+    sorted_keys = sorted(model_editions.keys(), key=lambda x: (x[0], x[2], x[1]))
 
     current_model = None
     for (model, toyota_variant, ayvens_variant), edition_comparisons in [(k, model_editions[k]) for k in sorted_keys]:
-        # Model header
+        # Skip if no valid comparisons
+        if not edition_comparisons:
+            continue
+
+        # Model header (only print when model changes)
         if model != current_model:
             current_model = model
             report_lines.extend([
@@ -406,11 +445,14 @@ def generate_report(comparisons: List[PriceComparison]) -> str:
                 "=" * 80,
             ])
 
+        # Extract clean edition name from Ayvens variant
+        ayvens_edition = ModelMatcher.extract_edition(ayvens_variant)
+        display_variant = ayvens_edition if ayvens_edition else ayvens_variant[:60]
+
         # Edition header
         report_lines.extend([
             "",
-            f"  Edition: {toyota_variant}",
-            f"  Matched with: {ayvens_variant[:60]}..." if len(ayvens_variant) > 60 else f"  Matched with: {ayvens_variant}",
+            f"  Ayvens Edition: {display_variant}",
             "",
         ])
 
@@ -418,8 +460,7 @@ def generate_report(comparisons: List[PriceComparison]) -> str:
         report_lines.append(f"    {'Duration':<8} {'KM/Year':<10} {'Toyota':<10} {'Ayvens':<10} {'Diff':<10} {'Winner':<10}")
         report_lines.append("    " + "-" * 58)
 
-        valid_edition = [c for c in edition_comparisons if c.toyota_price and c.ayvens_price]
-        for c in valid_edition:
+        for c in edition_comparisons:
             toyota_str = f"€{c.toyota_price:.0f}"
             ayvens_str = f"€{c.ayvens_price:.0f}"
             diff_str = f"€{c.difference:+.0f}"
@@ -430,11 +471,10 @@ def generate_report(comparisons: List[PriceComparison]) -> str:
             )
 
         # Edition summary
-        if valid_edition:
-            edition_avg = sum(c.difference for c in valid_edition) / len(valid_edition)
-            cheaper_count = sum(1 for c in valid_edition if c.difference > 0)
-            report_lines.append("")
-            report_lines.append(f"    Summary: Avg diff €{edition_avg:+.0f}/mo | Toyota cheaper in {cheaper_count}/{len(valid_edition)} cases")
+        edition_avg = sum(c.difference for c in edition_comparisons) / len(edition_comparisons)
+        cheaper_count = sum(1 for c in edition_comparisons if c.difference > 0)
+        report_lines.append("")
+        report_lines.append(f"    Summary: Avg diff €{edition_avg:+.0f}/mo | Toyota cheaper in {cheaper_count}/{len(edition_comparisons)} cases")
 
     report_lines.extend([
         "",
