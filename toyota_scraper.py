@@ -538,34 +538,73 @@ class ToyotaScraper:
         edition_names = {}   # {edition_index: edition_name}
         discovered_slugs = []  # Edition slugs discovered from model page
 
-        # First, visit the model-specific page to discover edition slugs
+        # First, visit the model-specific page to discover edition slugs by clicking cards
         model_page_url = f"{self.OVERVIEW_URL}/{model_slug}"
         logger.info(f"Discovering edition URLs from: {model_page_url}")
         self._rate_limit()
         self.driver.get(model_page_url)
         self._wait_for_page_load()
         self._accept_cookies()
-        time.sleep(2)
+        time.sleep(3)  # Extra wait for JS to load
 
-        # Look for edition slugs in page source
-        soup = BeautifulSoup(self.driver.page_source, 'lxml')
-        for link in soup.find_all('a', href=True):
-            href = link.get('href', '')
-            match = re.search(r'#/edition/([^/\?]+)', href)
-            if match:
-                slug = match.group(1)
-                if model_slug in slug.lower() and slug not in discovered_slugs:
+        # Find edition cards by looking for ancestor of edition-name elements
+        edition_cards = self.driver.find_elements(
+            By.XPATH,
+            '//h4[@data-testid="edition-name"]/ancestor::*[contains(@class, "card") or @role="button"][1]'
+        )
+        num_cards = len(edition_cards)
+        logger.info(f"  Found {num_cards} edition cards to click")
+
+        # Click each card to discover its URL (by index, re-finding after each click)
+        edition_urls = []  # List of (edition_name, slug, full_url)
+        for i in range(num_cards):
+            try:
+                # Re-find cards fresh each iteration (DOM changes after navigation)
+                edition_cards = self.driver.find_elements(
+                    By.XPATH,
+                    '//h4[@data-testid="edition-name"]/ancestor::*[contains(@class, "card") or @role="button"][1]'
+                )
+                if i >= len(edition_cards):
+                    break
+
+                card = edition_cards[i]
+
+                # Get edition name before clicking
+                edition_name_elem = card.find_element(By.CSS_SELECTOR, '[data-testid="edition-name"]')
+                edition_name = edition_name_elem.text.strip()
+
+                # Scroll to card and click
+                self.driver.execute_script('arguments[0].scrollIntoView(true);', card)
+                time.sleep(0.5)
+                card.click()
+                time.sleep(1.5)
+
+                # Get URL after click
+                current_url = self.driver.current_url
+
+                # Extract slug from URL
+                slug_match = re.search(r'#/edition/([^/]+)/configurator', current_url)
+                if slug_match:
+                    slug = slug_match.group(1)
                     discovered_slugs.append(slug)
+                    edition_urls.append((edition_name, slug, current_url))
+                    logger.info(f"    Edition {i+1}: {edition_name} -> {slug}")
 
-        # Also look in script tags
-        for script in soup.find_all('script'):
-            if script.string:
-                matches = re.findall(r'#/edition/([a-z0-9-]+)', script.string)
-                for slug in matches:
-                    if model_slug in slug.lower() and slug not in discovered_slugs:
-                        discovered_slugs.append(slug)
+                # Navigate back to model page for next card
+                self.driver.get(model_page_url)
+                time.sleep(2)
 
-        logger.info(f"  Found {len(discovered_slugs)} edition slugs")
+            except Exception as e:
+                logger.debug(f"    Error clicking card {i}: {e}")
+                # Try to get back to model page if something went wrong
+                try:
+                    self.driver.get(model_page_url)
+                    time.sleep(2)
+                except:
+                    pass
+                continue
+
+        logger.info(f"  Discovered {len(discovered_slugs)} edition slugs")
 
         # Now visit the filter URL to get prices
         model_url = filter_url if filter_url else model_page_url
@@ -624,7 +663,8 @@ class ToyotaScraper:
             # Use discovered edition slug if available (by index)
             if idx < len(discovered_slugs):
                 edition_slug = discovered_slugs[idx]
-                configurator_url = f"{self.OVERVIEW_URL}/{model_slug}#/edition/{edition_slug}/configurator"
+                # Format: https://www.toyota.nl/private-lease/modellen#/edition/{slug}/configurator?model[]={model}&durationMonths=72&yearlyKilometers=5000
+                configurator_url = f"{self.OVERVIEW_URL}#/edition/{edition_slug}/configurator?model[]={model_slug}&durationMonths=72&yearlyKilometers=5000"
             else:
                 # Try to use edition URL from page if available
                 edition_url = ed_data.get('edition_url', '')
