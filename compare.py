@@ -337,6 +337,87 @@ def is_valid_price(price: Optional[float]) -> bool:
     return 100 <= price <= 2000
 
 
+def extract_toyota_display_name(toyota: dict) -> str:
+    """Extract a clean display name for Toyota variant from edition_slug.
+
+    Converts slugs like 'toyota-yaris-cross-toyota-yaris-cross-hybrid-115-active-automaat-1'
+    to 'Hybrid 115 Active'
+    """
+    import re
+    slug = toyota.get('edition_slug', '')
+
+    # Try to extract from slug (e.g., "hybrid-115-active-automaat" or "hybrid-140-gr-sport")
+    # Look for pattern: hybrid-{power}-{edition}-automaat (edition can be multi-word like gr-sport)
+    match = re.search(r'(hybrid|electric)-(\d+)-([\w-]+?)(?:-automaat)?(?:-\d)?$', slug, re.IGNORECASE)
+    if match:
+        fuel = match.group(1).title()
+        power = match.group(2)
+        edition = match.group(3).replace('-', ' ').title()
+        # Normalize GR Sport to GR-Sport
+        if 'Gr Sport' in edition:
+            edition = edition.replace('Gr Sport', 'GR-Sport')
+        # Remove trailing "Automaat" if present
+        edition = re.sub(r'\s*Automaat\s*$', '', edition, flags=re.IGNORECASE)
+        return f"{fuel} {power} {edition}"
+
+    # Fallback to edition_name if extraction fails
+    edition_name = toyota.get('edition_name', '')
+    if edition_name and not edition_name.startswith('Edition '):
+        return edition_name
+
+    return slug.replace('-', ' ').title() if slug else ''
+
+
+def extract_ayvens_display_name(ayvens: dict) -> str:
+    """Extract a clean display name for Ayvens variant.
+
+    Converts variants like '140 Active 5d Hybrid 140 Active 5d...'
+    to 'Hybrid 140 Active 5d'
+    """
+    import re
+    variant = ayvens.get('variant', '')
+
+    # Ayvens variant format is typically: "{power} {edition} {doors}d Hybrid..."
+    # where edition can be multi-word like "GR-Sport"
+
+    # Try pattern: "Hybrid {power} {edition} {doors}d" - edition can include hyphens
+    match = re.search(r'Hybrid\s+(\d+)\s+([\w-]+)\s+(?:Automaat\s+)?(\d)d', variant, re.IGNORECASE)
+    if match:
+        power = match.group(1)
+        edition = match.group(2)
+        # Normalize GR-Sport
+        if edition.lower().startswith('gr'):
+            edition = 'GR-Sport'
+        else:
+            edition = edition.title()
+        doors = match.group(3)
+        return f"Hybrid {power} {edition} {doors}d"
+
+    # Try pattern at start: "{power} {edition} {doors}d Hybrid" - edition can include hyphens
+    match = re.search(r'^(\d+)\s+([\w-]+)\s+(\d)d\s+Hybrid', variant, re.IGNORECASE)
+    if match:
+        power = match.group(1)
+        edition = match.group(2)
+        # Normalize GR-Sport
+        if edition.lower().startswith('gr'):
+            edition = 'GR-Sport'
+        else:
+            edition = edition.title()
+        doors = match.group(3)
+        return f"Hybrid {power} {edition} {doors}d"
+
+    # Fallback: just return the first meaningful part
+    parts = variant.split()
+    if len(parts) >= 4:
+        # Take first 4 words
+        result = ' '.join(parts[:4])
+        if 'Hybrid' not in result:
+            result = 'Hybrid ' + result
+        return result
+
+    return variant[:50] if variant else ''
+
+
 def compare_prices(matches: List[Tuple[dict, dict]]) -> List[PriceComparison]:
     """Generate price comparisons for all matched models."""
     comparisons = []
@@ -376,8 +457,8 @@ def compare_prices(matches: List[Tuple[dict, dict]]) -> List[PriceComparison]:
 
                 comparison = PriceComparison(
                     model=toyota.get('model', 'Unknown'),
-                    toyota_variant=toyota.get('edition_name', ''),
-                    ayvens_variant=ayvens.get('variant', ''),
+                    toyota_variant=extract_toyota_display_name(toyota),
+                    ayvens_variant=extract_ayvens_display_name(ayvens),
                     duration=duration,
                     km_per_year=km,
                     toyota_price=toyota_price,
@@ -474,6 +555,7 @@ def generate_report(comparisons: List[PriceComparison]) -> str:
             "",
             f"  Edition: {display_variant}",
             f"  Toyota variant: {toyota_variant}",
+            f"  Ayvens variant: {ayvens_variant}",
             "",
             f"  Toyota URL: {toyota_url}" if toyota_url else "  Toyota URL: N/A",
             f"  Ayvens URL: {ayvens_url}" if ayvens_url else "  Ayvens URL: N/A",
