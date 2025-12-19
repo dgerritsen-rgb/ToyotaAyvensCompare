@@ -358,7 +358,7 @@ class ToyotaScraper:
         return ""
 
     def _extract_prices_from_model_page(self) -> List[Dict[str, Any]]:
-        """Extract all edition prices from model page cards."""
+        """Extract all edition prices and URLs from model page cards."""
         soup = BeautifulSoup(self.driver.page_source, 'lxml')
         editions = []
 
@@ -382,6 +382,24 @@ class ToyotaScraper:
                     if edition_name and self._is_price_text(edition_name):
                         edition_name = ""
 
+                    # Find the edition URL by looking for links in parent card
+                    edition_url = None
+                    card = elem
+                    for _ in range(15):  # Search up to 15 levels
+                        parent = card.find_parent()
+                        if not parent:
+                            break
+                        # Look for edition link in this container
+                        links = parent.find_all('a', href=True)
+                        for link in links:
+                            href = link.get('href', '')
+                            if '#/edition/' in href:
+                                edition_url = href
+                                break
+                        if edition_url:
+                            break
+                        card = parent
+
                     # Create a key to deduplicate
                     key = edition_name if edition_name else f"edition_{len(editions)}"
                     if key in seen_editions:
@@ -390,7 +408,8 @@ class ToyotaScraper:
 
                     editions.append({
                         'price': price,
-                        'edition_name': edition_name
+                        'edition_name': edition_name,
+                        'edition_url': edition_url
                     })
 
         return editions
@@ -517,15 +536,44 @@ class ToyotaScraper:
         editions = []
         edition_prices = {}  # {edition_index: {duration_km: price}}
         edition_names = {}   # {edition_index: edition_name}
+        discovered_slugs = []  # Edition slugs discovered from model page
 
-        # Use filter URL if provided, otherwise fall back to model page
-        model_url = filter_url if filter_url else f"{self.OVERVIEW_URL}/{model_slug}"
+        # First, visit the model-specific page to discover edition slugs
+        model_page_url = f"{self.OVERVIEW_URL}/{model_slug}"
+        logger.info(f"Discovering edition URLs from: {model_page_url}")
+        self._rate_limit()
+        self.driver.get(model_page_url)
+        self._wait_for_page_load()
+        self._accept_cookies()
+        time.sleep(2)
+
+        # Look for edition slugs in page source
+        soup = BeautifulSoup(self.driver.page_source, 'lxml')
+        for link in soup.find_all('a', href=True):
+            href = link.get('href', '')
+            match = re.search(r'#/edition/([^/\?]+)', href)
+            if match:
+                slug = match.group(1)
+                if model_slug in slug.lower() and slug not in discovered_slugs:
+                    discovered_slugs.append(slug)
+
+        # Also look in script tags
+        for script in soup.find_all('script'):
+            if script.string:
+                matches = re.findall(r'#/edition/([a-z0-9-]+)', script.string)
+                for slug in matches:
+                    if model_slug in slug.lower() and slug not in discovered_slugs:
+                        discovered_slugs.append(slug)
+
+        logger.info(f"  Found {len(discovered_slugs)} edition slugs")
+
+        # Now visit the filter URL to get prices
+        model_url = filter_url if filter_url else model_page_url
         logger.info(f"Scraping prices from model page: {model_url}")
 
         self._rate_limit()
         self.driver.get(model_url)
         self._wait_for_page_load()
-        self._accept_cookies()
         time.sleep(2)
 
         # First, get edition names/info from the initial page load
@@ -573,14 +621,31 @@ class ToyotaScraper:
             if not edition_name or self._is_price_text(edition_name):
                 edition_name = f"Edition {idx+1}"
 
-            # Build configurator URL for this specific edition
-            # Format: https://www.toyota.nl/private-lease/modellen#?model[]=model-slug&durationMonths=72&yearlyKilometers=5000
-            configurator_url = f"{self.OVERVIEW_URL}#?model[]={model_slug}&durationMonths=72&yearlyKilometers=5000"
+            # Use discovered edition slug if available (by index)
+            if idx < len(discovered_slugs):
+                edition_slug = discovered_slugs[idx]
+                configurator_url = f"{self.OVERVIEW_URL}/{model_slug}#/edition/{edition_slug}/configurator"
+            else:
+                # Try to use edition URL from page if available
+                edition_url = ed_data.get('edition_url', '')
+                if edition_url:
+                    if edition_url.startswith('#'):
+                        configurator_url = f"{self.OVERVIEW_URL}/{model_slug}{edition_url}"
+                    elif edition_url.startswith('/'):
+                        configurator_url = f"{self.BASE_URL}{edition_url}"
+                    else:
+                        configurator_url = edition_url
+                    slug_match = re.search(r'#/edition/([^/]+)', edition_url)
+                    edition_slug = slug_match.group(1) if slug_match else f"toyota-{model_slug}-{idx}"
+                else:
+                    # Fallback to overview URL with model filter
+                    configurator_url = f"{self.OVERVIEW_URL}#?model[]={model_slug}&durationMonths=72&yearlyKilometers=5000"
+                    edition_slug = f"toyota-{model_slug}-{idx}"
 
             edition = ToyotaEdition(
                 model=model_name,
                 edition_name=edition_name,
-                edition_slug=f"toyota-{model_slug}-{idx}",
+                edition_slug=edition_slug,
                 fuel_type="Hybrid",
                 transmission="Automatic",
                 base_url=model_url,

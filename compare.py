@@ -346,9 +346,11 @@ def compare_prices(matches: List[Tuple[dict, dict]]) -> List[PriceComparison]:
         ayvens_prices = ayvens.get('price_matrix', {})
 
         # Get URLs for this edition
-        # Always generate the proper Toyota model filter URL for easy verification
-        model_slug = toyota.get('model', '').lower().replace(' ', '-')
-        toyota_url = toyota.get('configurator_url') or f"https://www.toyota.nl/private-lease/modellen#?model[]={model_slug}&durationMonths=72&yearlyKilometers=5000"
+        # Use configurator_url if available (individual edition page), otherwise generate fallback
+        toyota_url = toyota.get('configurator_url', '')
+        if not toyota_url:
+            model_slug = toyota.get('model', '').lower().replace(' ', '-')
+            toyota_url = f"https://www.toyota.nl/private-lease/modellen#?model[]={model_slug}&durationMonths=72&yearlyKilometers=5000"
         ayvens_url = ayvens.get('offer_url', '')
 
         for duration in DURATIONS:
