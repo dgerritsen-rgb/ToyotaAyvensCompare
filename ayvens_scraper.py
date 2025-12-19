@@ -372,42 +372,18 @@ class AyvensScraper:
 
         return False
 
+    # Hardcoded BTO (Build-to-Order) Toyota variant pages on Ayvens
+    # These are the only new/configurable Toyota models available
+    BTO_VARIANT_URLS = [
+        "https://www.ayvens.com/nl-nl/private-lease-showroom/model/toyota/yaris-cross/suv/",
+        "https://www.ayvens.com/nl-nl/private-lease-showroom/model/toyota/corolla-touring-sports/stationwagon/",
+    ]
+
     def _discover_variant_pages(self) -> List[str]:
-        """Discover variant pages from Toyota showroom (e.g., /model/toyota/yaris/hatchback/)."""
-        logger.info("Discovering Toyota model/variant pages from showroom...")
-        variant_urls = []
-
-        try:
-            self._rate_limit()
-            self.driver.get(self.TOYOTA_SHOWROOM_URL)
-            self._wait_for_page_load()
-            self._accept_cookies()
-
-            # Scroll to load all content
-            for _ in range(5):
-                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(1)
-
-            soup = BeautifulSoup(self.driver.page_source, 'lxml')
-            all_links = soup.find_all('a', href=True)
-
-            for link in all_links:
-                href = link.get('href', '')
-                # Look for variant page links like /private-lease-showroom/model/toyota/{model}/{variant}/
-                if '/private-lease-showroom/model/toyota/' in href:
-                    if href.startswith('/'):
-                        full_url = self.BASE_URL + href
-                    else:
-                        full_url = href
-                    if full_url not in variant_urls:
-                        variant_urls.append(full_url)
-
-            logger.info(f"Found {len(variant_urls)} Toyota model/variant pages")
-            return variant_urls
-
-        except Exception as e:
-            logger.error(f"Error discovering variant pages: {e}")
-            return []
+        """Return the known BTO Toyota variant pages."""
+        logger.info("Using known BTO Toyota variant pages...")
+        logger.info(f"BTO models: Yaris Cross SUV, Corolla Touring Sports")
+        return self.BTO_VARIANT_URLS
 
     def _discover_toyota_vehicles(self) -> List[Dict[str, Any]]:
         """Discover all Toyota vehicles by navigating through variant pages."""

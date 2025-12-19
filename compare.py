@@ -37,6 +37,8 @@ class PriceComparison:
     ayvens_price: Optional[float]
     difference: Optional[float]  # Ayvens - Toyota (negative = Ayvens cheaper)
     difference_pct: Optional[float]
+    toyota_url: Optional[str] = None
+    ayvens_url: Optional[str] = None
 
     @property
     def cheaper_at(self) -> Optional[str]:
@@ -94,15 +96,18 @@ class ModelMatcher:
 
     @classmethod
     def is_valid_edition_name(cls, edition: str) -> bool:
-        """Check if edition name is valid (not a price or empty)."""
+        """Check if edition name is valid (not a price, empty, or generic placeholder)."""
         if not edition:
             return False
+        import re
         # Skip if it looks like a price
         price_patterns = [r'€', r'\d+,-', r'\d+,\d{2}', r'vanaf', r'per maand', r'p/m']
-        import re
         for pattern in price_patterns:
             if re.search(pattern, edition, re.IGNORECASE):
                 return False
+        # Skip if it's a generic numbered edition (e.g., "Edition 1", "Edition 2")
+        if re.match(r'^Edition\s*\d+$', edition, re.IGNORECASE):
+            return False
         return True
 
     @classmethod
@@ -232,32 +237,30 @@ def scrape_fresh_data() -> Tuple[List[ToyotaEdition], List[AyvensOffer]]:
     return toyota_editions, ayvens_offers
 
 
-def match_editions(toyota_editions: List[dict], ayvens_offers: List[dict], new_only: bool = True) -> List[Tuple[dict, dict]]:
+def match_editions(toyota_editions: List[dict], ayvens_offers: List[dict], exclude_used: bool = True) -> List[Tuple[dict, dict]]:
     """Match Toyota editions with Ayvens offers.
 
     Args:
         toyota_editions: List of Toyota editions
         ayvens_offers: List of Ayvens offers
-        new_only: If True, only include new (build-to-order) Ayvens vehicles
+        exclude_used: If True, exclude vehicles that are clearly used (have kilometerstand/mileage info)
     """
     matches = []
 
-    # Filter Ayvens to new cars only if requested
-    if new_only:
+    # Filter out used cars (with mileage info) if requested
+    if exclude_used:
         filtered_ayvens = []
         for ayvens in ayvens_offers:
-            # Check using is_new field if available, otherwise use variant text detection
-            is_new = ayvens.get('is_new', True)  # Default to True for backward compatibility
             variant = ayvens.get('variant', '')
 
-            # Double-check with variant text
+            # Only exclude if variant text shows clear used car indicators
             if ModelMatcher.is_used_car(variant):
-                is_new = False
+                logger.debug(f"Excluding used car: {variant[:60]}...")
+                continue
 
-            if is_new:
-                filtered_ayvens.append(ayvens)
+            filtered_ayvens.append(ayvens)
 
-        logger.info(f"Filtered to {len(filtered_ayvens)} new Ayvens vehicles (from {len(ayvens_offers)} total)")
+        logger.info(f"Filtered to {len(filtered_ayvens)} Ayvens vehicles (excluded {len(ayvens_offers) - len(filtered_ayvens)} used cars)")
         ayvens_offers = filtered_ayvens
 
     # Group by model first to avoid cross-matching
@@ -342,6 +345,12 @@ def compare_prices(matches: List[Tuple[dict, dict]]) -> List[PriceComparison]:
         toyota_prices = toyota.get('price_matrix', {})
         ayvens_prices = ayvens.get('price_matrix', {})
 
+        # Get URLs for this edition
+        # Always generate the proper Toyota model filter URL for easy verification
+        model_slug = toyota.get('model', '').lower().replace(' ', '-')
+        toyota_url = toyota.get('configurator_url') or f"https://www.toyota.nl/private-lease/modellen#?model[]={model_slug}&durationMonths=72&yearlyKilometers=5000"
+        ayvens_url = ayvens.get('offer_url', '')
+
         for duration in DURATIONS:
             for km in MILEAGES:
                 key = f"{duration}_{km}"
@@ -373,6 +382,8 @@ def compare_prices(matches: List[Tuple[dict, dict]]) -> List[PriceComparison]:
                     ayvens_price=ayvens_price,
                     difference=difference,
                     difference_pct=difference_pct,
+                    toyota_url=toyota_url,
+                    ayvens_url=ayvens_url,
                 )
                 comparisons.append(comparison)
 
@@ -384,9 +395,11 @@ def generate_report(comparisons: List[PriceComparison]) -> str:
     report_lines = [
         "=" * 80,
         "TOYOTA.NL vs AYVENS PRIVATE LEASE PRICE COMPARISON",
-        "NEW VEHICLES ONLY (Build-to-Order)",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "=" * 80,
+        "",
+        "NOTE: Please verify matches using the URLs below. Toyota editions are matched",
+        "      with Ayvens editions by model - verify edition names match at each URL.",
         "",
     ]
 
@@ -417,6 +430,7 @@ def generate_report(comparisons: List[PriceComparison]) -> str:
 
     # Group by model and edition, filtering to only those with valid comparisons
     model_editions = {}
+    edition_urls = {}  # Store URLs per edition key
     for c in comparisons:
         # Only include if both prices are valid
         if not (c.toyota_price and c.ayvens_price):
@@ -424,6 +438,7 @@ def generate_report(comparisons: List[PriceComparison]) -> str:
         key = (c.model, c.toyota_variant, c.ayvens_variant)
         if key not in model_editions:
             model_editions[key] = []
+            edition_urls[key] = (c.toyota_url, c.ayvens_url)
         model_editions[key].append(c)
 
     # Sort by model name, then by Ayvens variant (which has the actual edition name)
@@ -449,10 +464,17 @@ def generate_report(comparisons: List[PriceComparison]) -> str:
         ayvens_edition = ModelMatcher.extract_edition(ayvens_variant)
         display_variant = ayvens_edition if ayvens_edition else ayvens_variant[:60]
 
-        # Edition header
+        # Get URLs for this edition
+        toyota_url, ayvens_url = edition_urls.get((model, toyota_variant, ayvens_variant), ('', ''))
+
+        # Edition header with URLs
         report_lines.extend([
             "",
-            f"  Ayvens Edition: {display_variant}",
+            f"  Edition: {display_variant}",
+            f"  Toyota variant: {toyota_variant}",
+            "",
+            f"  Toyota URL: {toyota_url}" if toyota_url else "  Toyota URL: N/A",
+            f"  Ayvens URL: {ayvens_url}" if ayvens_url else "  Ayvens URL: N/A",
             "",
         ])
 
@@ -505,6 +527,8 @@ def generate_csv(comparisons: List[PriceComparison], filename: str):
             'difference_eur': c.difference,
             'difference_pct': c.difference_pct,
             'cheaper_at': c.cheaper_at,
+            'toyota_url': c.toyota_url,
+            'ayvens_url': c.ayvens_url,
         })
 
     df = pd.DataFrame(data)

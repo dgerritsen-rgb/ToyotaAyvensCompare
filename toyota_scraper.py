@@ -51,6 +51,7 @@ class ToyotaEdition:
     transmission: str
     power: Optional[str] = None
     base_url: Optional[str] = None
+    configurator_url: Optional[str] = None  # Direct URL to this edition's configurator
     price_matrix: Dict[str, float] = field(default_factory=dict)  # "duration_km" -> price
 
     def get_price(self, duration: int, km: int) -> Optional[float]:
@@ -139,18 +140,11 @@ class ToyotaScraper:
         except Exception as e:
             logger.debug(f"No cookie banner or error: {e}")
 
-    # Known Toyota private lease models
+    # Toyota models to scrape - limited to those available as BTO on Ayvens
+    # Each tuple: (model_slug, model_name, filter_url)
     KNOWN_MODELS = [
-        ("aygo-x", "Aygo X"),
-        ("yaris", "Yaris"),
-        ("yaris-cross", "Yaris Cross"),
-        ("urban-cruiser", "Urban Cruiser"),
-        ("corolla", "Corolla Hatchback"),
-        ("corolla-touring-sports", "Corolla Touring Sports"),
-        ("corolla-cross", "Corolla Cross"),
-        ("c-hr", "C-HR"),
-        ("rav4", "RAV4"),
-        ("bz4x", "bZ4X"),
+        ("yaris-cross", "Yaris Cross", "https://www.toyota.nl/private-lease/modellen#?model[]=yaris-cross&durationMonths=72&yearlyKilometers=5000"),
+        ("corolla-touring-sports", "Corolla Touring Sports", "https://www.toyota.nl/private-lease/modellen#?model[]=corolla-touring-sports&durationMonths=72&yearlyKilometers=5000"),
     ]
 
     def _discover_editions(self) -> List[ToyotaEdition]:
@@ -164,7 +158,7 @@ class ToyotaScraper:
 
         all_editions = []
 
-        for model_slug, model_name in self.KNOWN_MODELS:
+        for model_slug, model_name, filter_url in self.KNOWN_MODELS:
             logger.info(f"Checking model: {model_name}")
             editions = self._discover_editions_for_model(model_slug, model_name)
             all_editions.extend(editions)
@@ -518,12 +512,14 @@ class ToyotaScraper:
 
         return price
 
-    def _scrape_model_page_prices(self, model_slug: str, model_name: str) -> List[ToyotaEdition]:
+    def _scrape_model_page_prices(self, model_slug: str, model_name: str, filter_url: str = None) -> List[ToyotaEdition]:
         """Scrape all editions for a model by using the model page dropdowns."""
         editions = []
         edition_prices = {}  # {edition_index: {duration_km: price}}
+        edition_names = {}   # {edition_index: edition_name}
 
-        model_url = f"{self.OVERVIEW_URL}/{model_slug}"
+        # Use filter URL if provided, otherwise fall back to model page
+        model_url = filter_url if filter_url else f"{self.OVERVIEW_URL}/{model_slug}"
         logger.info(f"Scraping prices from model page: {model_url}")
 
         self._rate_limit()
@@ -577,6 +573,10 @@ class ToyotaScraper:
             if not edition_name or self._is_price_text(edition_name):
                 edition_name = f"Edition {idx+1}"
 
+            # Build configurator URL for this specific edition
+            # Format: https://www.toyota.nl/private-lease/modellen#?model[]=model-slug&durationMonths=72&yearlyKilometers=5000
+            configurator_url = f"{self.OVERVIEW_URL}#?model[]={model_slug}&durationMonths=72&yearlyKilometers=5000"
+
             edition = ToyotaEdition(
                 model=model_name,
                 edition_name=edition_name,
@@ -584,6 +584,7 @@ class ToyotaScraper:
                 fuel_type="Hybrid",
                 transmission="Automatic",
                 base_url=model_url,
+                configurator_url=configurator_url,
                 price_matrix=edition_prices.get(idx, {})
             )
             if edition.price_matrix:
@@ -628,9 +629,9 @@ class ToyotaScraper:
             print("Scraping Toyota.nl Private Lease - Model Page Approach")
             print("="*60 + "\n")
 
-            for model_slug, model_name in self.KNOWN_MODELS:
+            for model_slug, model_name, filter_url in self.KNOWN_MODELS:
                 print(f"\nProcessing: {model_name}")
-                editions = self._scrape_model_page_prices(model_slug, model_name)
+                editions = self._scrape_model_page_prices(model_slug, model_name, filter_url)
 
                 if editions:
                     all_editions.extend(editions)
