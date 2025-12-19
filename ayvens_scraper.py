@@ -501,56 +501,265 @@ class AyvensScraper:
         except Exception:
             return False
 
+    def _reset_slider_to_min(self, slider_type: str) -> bool:
+        """Reset slider to minimum value using HOME key with retry."""
+        try:
+            from selenium.webdriver.common.keys import Keys
+
+            if slider_type == 'duration':
+                min_val, max_val = 12, 72
+            else:
+                min_val, max_val = 5000, 30000
+
+            for attempt in range(3):  # Retry up to 3 times
+                sliders = self.driver.find_elements(By.CSS_SELECTOR, "[role='slider']")
+
+                for slider in sliders:
+                    try:
+                        slider_min = int(slider.get_attribute('aria-valuemin') or 0)
+                        slider_max = int(slider.get_attribute('aria-valuemax') or 0)
+                        current_val = int(slider.get_attribute('aria-valuenow') or 0)
+
+                        if slider_min == min_val and slider_max == max_val:
+                            # Already at minimum
+                            if current_val == min_val:
+                                return True
+
+                            # Click and focus the slider
+                            try:
+                                # First scroll the slider into view
+                                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", slider)
+                                time.sleep(0.2)
+                                # Try regular click first
+                                slider.click()
+                            except Exception:
+                                try:
+                                    # Use JavaScript click if regular click fails
+                                    self.driver.execute_script("arguments[0].click(); arguments[0].focus();", slider)
+                                except Exception:
+                                    continue
+                            time.sleep(0.15)
+
+                            # Send HOME key to go to minimum
+                            try:
+                                slider.send_keys(Keys.HOME)
+                            except Exception:
+                                continue
+                            time.sleep(0.3)
+
+                            # Verify it actually moved
+                            new_val = int(slider.get_attribute('aria-valuenow') or 0)
+                            if new_val == min_val:
+                                return True
+
+                            time.sleep(0.2)
+
+                    except Exception:
+                        continue
+
+            # If all attempts failed, try multiple LEFT keys as fallback
+            logger.debug(f"HOME key failed for {slider_type}, trying LEFT key fallback")
+            sliders = self.driver.find_elements(By.CSS_SELECTOR, "[role='slider']")
+            for slider in sliders:
+                try:
+                    slider_min = int(slider.get_attribute('aria-valuemin') or 0)
+                    slider_max = int(slider.get_attribute('aria-valuemax') or 0)
+
+                    if slider_min == min_val and slider_max == max_val:
+                        slider.click()
+                        time.sleep(0.1)
+                        # Send many LEFT keys to ensure we reach minimum
+                        for _ in range(10):
+                            slider.send_keys(Keys.ARROW_LEFT)
+                            time.sleep(0.05)
+                        time.sleep(0.2)
+                        return True
+                except Exception:
+                    continue
+
+        except Exception as e:
+            logger.debug(f"Error in reset: {e}")
+        return False
+
+    def _move_slider_right(self, slider_type: str) -> bool:
+        """Move slider one position to the right."""
+        try:
+            from selenium.webdriver.common.keys import Keys
+
+            if slider_type == 'duration':
+                min_val, max_val = 12, 72
+            else:
+                min_val, max_val = 5000, 30000
+
+            sliders = self.driver.find_elements(By.CSS_SELECTOR, "[role='slider']")
+
+            for slider in sliders:
+                try:
+                    slider_min = int(slider.get_attribute('aria-valuemin') or 0)
+                    slider_max = int(slider.get_attribute('aria-valuemax') or 0)
+
+                    if slider_min == min_val and slider_max == max_val:
+                        # Scroll into view and click
+                        try:
+                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", slider)
+                            time.sleep(0.1)
+                            slider.click()
+                        except Exception:
+                            try:
+                                self.driver.execute_script("arguments[0].click(); arguments[0].focus();", slider)
+                            except Exception:
+                                continue
+
+                        time.sleep(0.05)
+                        slider.send_keys(Keys.ARROW_RIGHT)
+                        time.sleep(0.2)
+                        return True
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return False
+
+    def _set_slider_with_keys(self, slider_type: str, target_value: int) -> bool:
+        """Set slider value using keyboard arrow keys - more reliable than dragging."""
+        try:
+            from selenium.webdriver.common.keys import Keys
+
+            if slider_type == 'duration':
+                min_val, max_val, step = 12, 72, 12  # Duration steps: 12, 24, 36, 48, 60, 72
+            else:
+                min_val, max_val, step = 5000, 30000, 5000  # Mileage steps: 5000, 10000, ...
+
+            sliders = self.driver.find_elements(By.CSS_SELECTOR, "[role='slider']")
+            logger.debug(f"Found {len(sliders)} sliders, looking for {slider_type} (min={min_val}, max={max_val})")
+
+            for slider in sliders:
+                try:
+                    slider_min = int(slider.get_attribute('aria-valuemin') or 0)
+                    slider_max = int(slider.get_attribute('aria-valuemax') or 0)
+                    current_val = int(slider.get_attribute('aria-valuenow') or 0)
+
+                    logger.debug(f"  Slider: min={slider_min}, max={slider_max}, current={current_val}")
+
+                    if slider_min == min_val and slider_max == max_val:
+                        # Already at target value
+                        if current_val == target_value:
+                            logger.debug(f"  Already at target {target_value}")
+                            return True
+
+                        # Focus the slider
+                        slider.click()
+                        time.sleep(0.1)
+
+                        # Calculate steps needed
+                        steps_needed = (target_value - current_val) // step
+                        logger.debug(f"  Moving {steps_needed} steps from {current_val} to {target_value}")
+
+                        if steps_needed > 0:
+                            for _ in range(steps_needed):
+                                slider.send_keys(Keys.ARROW_RIGHT)
+                                time.sleep(0.05)
+                        elif steps_needed < 0:
+                            for _ in range(abs(steps_needed)):
+                                slider.send_keys(Keys.ARROW_LEFT)
+                                time.sleep(0.05)
+
+                        time.sleep(0.3)
+
+                        # Verify the slider actually moved
+                        new_val = int(slider.get_attribute('aria-valuenow') or 0)
+                        logger.debug(f"  After keys: new value = {new_val}")
+
+                        return True
+
+                except Exception as e:
+                    logger.debug(f"Error with slider keys: {e}")
+                    continue
+
+        except Exception as e:
+            logger.debug(f"Error setting slider with keys: {e}")
+
+        return False
+
+    def _ensure_valid_session(self):
+        """Ensure the browser session is valid, recreating if necessary."""
+        try:
+            # Try a simple operation to check session validity
+            self.driver.current_url
+            return True
+        except Exception:
+            logger.info("Session invalid, recreating browser...")
+            try:
+                if self._driver:
+                    self._driver.quit()
+            except Exception:
+                pass
+            self._driver = None
+            # Access driver property to create new instance
+            _ = self.driver
+            return True
+
     def _scrape_vehicle_prices(self, vehicle: Dict[str, Any]) -> Dict[str, float]:
-        """Scrape all price combinations for a vehicle."""
+        """Scrape all price combinations for a vehicle by iterating through slider positions."""
         price_matrix = {}
 
         try:
+            # Ensure we have a valid session
+            self._ensure_valid_session()
+
             self._rate_limit()
             self.driver.get(vehicle['url'])
             self._wait_for_page_load()
             time.sleep(2)
 
-            # Get initial price and values
-            initial_price = self._get_current_price()
-            duration, mileage = self._get_slider_values()
-
-            if initial_price and duration and mileage:
-                key = f"{duration}_{mileage}"
-                price_matrix[key] = initial_price
-                logger.debug(f"Initial: {duration}mo/{mileage}km = €{initial_price}")
+            # Accept cookies - required before sliders can be interacted with
+            self._accept_cookies()
 
             # Check if this vehicle has configurable sliders (new cars do, used cars may not)
             if not self._has_configurable_sliders():
                 logger.debug(f"No configurable sliders found for {vehicle['model']} - likely a used car")
+                # Just get the initial price
+                initial_price = self._get_current_price()
+                duration, mileage = self._get_slider_values()
+                if initial_price and duration and mileage:
+                    price_matrix[f"{duration}_{mileage}"] = initial_price
                 return price_matrix
 
-            # Try to set different duration/mileage combinations
-            # Note: This is a simplified approach - the actual slider interaction may need refinement
-            for target_duration in DURATIONS:
-                for target_mileage in MILEAGES:
-                    key = f"{target_duration}_{target_mileage}"
+            # Duration slider has 6 positions: 12, 24, 36, 48, 60, 72
+            # Mileage slider has 7 positions: 5000, 7500, 10000, 15000, 20000, 25000, 30000
+            DURATION_POSITIONS = 6
+            MILEAGE_POSITIONS = 7
 
-                    # Skip if we already have this combination
-                    if key in price_matrix:
-                        continue
+            # Reset duration to minimum (12 months)
+            self._reset_slider_to_min('duration')
+            time.sleep(0.5)
 
-                    # Try to set duration
-                    self._set_slider_by_drag('duration', target_duration)
-                    time.sleep(0.3)
+            for dur_pos in range(DURATION_POSITIONS):
+                # For each duration position, reset mileage to minimum
+                self._reset_slider_to_min('mileage')
+                time.sleep(0.5)
 
-                    # Try to set mileage
-                    self._set_slider_by_drag('mileage', target_mileage)
-                    time.sleep(0.3)
-
-                    # Get price
-                    price = self._get_current_price()
+                for mil_pos in range(MILEAGE_POSITIONS):
+                    # Get current slider values and price
+                    time.sleep(0.5)  # Wait for price to update
                     actual_duration, actual_mileage = self._get_slider_values()
+                    price = self._get_current_price()
 
                     if price and actual_duration and actual_mileage:
-                        actual_key = f"{actual_duration}_{actual_mileage}"
-                        if actual_key not in price_matrix:
-                            price_matrix[actual_key] = price
+                        key = f"{actual_duration}_{actual_mileage}"
+                        if key not in price_matrix:
+                            price_matrix[key] = price
+                            logger.debug(f"  {actual_duration}mo/{actual_mileage}km = €{price}")
+
+                    # Move mileage to next position (unless at last position)
+                    if mil_pos < MILEAGE_POSITIONS - 1:
+                        self._move_slider_right('mileage')
+                        time.sleep(0.2)
+
+                # Move duration to next position (unless at last position)
+                if dur_pos < DURATION_POSITIONS - 1:
+                    self._move_slider_right('duration')
+                    time.sleep(0.3)
 
         except Exception as e:
             logger.error(f"Error scraping vehicle prices: {e}")
