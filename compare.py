@@ -237,16 +237,20 @@ def load_cached_data() -> Tuple[Optional[List[dict]], Optional[List[dict]], Opti
     return toyota_data, ayvens_data, leasys_data
 
 
-def scrape_fresh_data() -> Tuple[List[ToyotaEdition], List[AyvensOffer], List[LeasysOffer]]:
-    """Scrape fresh data from all sites."""
+def scrape_fresh_data(use_cache: bool = False) -> Tuple[List[ToyotaEdition], List[AyvensOffer], List[LeasysOffer]]:
+    """Scrape data from all sites.
+
+    Args:
+        use_cache: If True, use smart caching for Toyota (check overview prices first)
+    """
     print("\n" + "="*70)
     print("TOYOTA PRIVATE LEASE PRICE COMPARISON - DATA COLLECTION")
     print("="*70)
 
-    # Scrape Toyota
+    # Scrape Toyota (with optional smart caching)
     print("\n>>> PHASE 1: SCRAPING TOYOTA.NL <<<\n")
     toyota_scraper = ToyotaScraper(headless=True)
-    toyota_editions = toyota_scraper.scrape_all()
+    toyota_editions = toyota_scraper.scrape_all(use_cache=use_cache)
     print(f"\nToyota scraping complete: {len(toyota_editions)} editions\n")
 
     # Scrape Ayvens
@@ -736,7 +740,9 @@ def main(use_cache: bool = True, scrape_fresh: bool = False):
 
     if toyota_data is None or ayvens_data is None or leasys_data is None or scrape_fresh:
         logger.info("Scraping fresh data...")
-        toyota_editions, ayvens_offers, leasys_offers = scrape_fresh_data()
+        # Use smart caching if we have cached data and just need a refresh
+        use_smart_cache = use_cache and toyota_data is not None
+        toyota_editions, ayvens_offers, leasys_offers = scrape_fresh_data(use_cache=use_smart_cache)
 
         # Convert to dicts for saving
         from dataclasses import asdict

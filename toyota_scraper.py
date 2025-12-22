@@ -140,11 +140,18 @@ class ToyotaScraper:
         except Exception as e:
             logger.debug(f"No cookie banner or error: {e}")
 
-    # Toyota models to scrape - limited to those available as BTO on Ayvens
-    # Each tuple: (model_slug, model_name, filter_url)
+    # All Toyota models available for private lease on Toyota.nl
+    # Each tuple: (model_slug, model_name)
     KNOWN_MODELS = [
-        ("yaris-cross", "Yaris Cross", "https://www.toyota.nl/private-lease/modellen#?model[]=yaris-cross&durationMonths=72&yearlyKilometers=5000"),
-        ("corolla-touring-sports", "Corolla Touring Sports", "https://www.toyota.nl/private-lease/modellen#?model[]=corolla-touring-sports&durationMonths=72&yearlyKilometers=5000"),
+        ("aygo-x", "Aygo X"),
+        ("yaris", "Yaris"),
+        ("yaris-cross", "Yaris Cross"),
+        ("corolla-hatchback", "Corolla Hatchback"),
+        ("corolla-touring-sports", "Corolla Touring Sports"),
+        ("corolla-cross", "Corolla Cross"),
+        ("c-hr", "C-HR"),
+        ("rav4", "RAV4"),
+        ("bz4x", "bZ4X"),
     ]
 
     def _discover_editions(self) -> List[ToyotaEdition]:
@@ -158,7 +165,7 @@ class ToyotaScraper:
 
         all_editions = []
 
-        for model_slug, model_name, filter_url in self.KNOWN_MODELS:
+        for model_slug, model_name in self.KNOWN_MODELS:
             logger.info(f"Checking model: {model_name}")
             editions = self._discover_editions_for_model(model_slug, model_name)
             all_editions.extend(editions)
@@ -722,20 +729,84 @@ class ToyotaScraper:
 
         return edition
 
-    def scrape_all(self) -> List[ToyotaEdition]:
-        """Scrape all Toyota editions with full price matrices."""
+    def scrape_all(self, use_cache: bool = True, cache_file: str = "output/toyota_prices.json") -> List[ToyotaEdition]:
+        """Scrape all Toyota editions with full price matrices.
+
+        Args:
+            use_cache: If True, check cached data and only refresh if prices changed
+            cache_file: Path to the cache file
+        """
         logger.info("Starting Toyota.nl private lease scrape")
 
         try:
             all_editions = []
+            cached_data = {}
+
+            # Load cached data if exists
+            if use_cache and os.path.exists(cache_file):
+                try:
+                    with open(cache_file, 'r') as f:
+                        cached_list = json.load(f)
+                    # Index by model+edition for quick lookup
+                    for item in cached_list:
+                        key = f"{item.get('model', '')}_{item.get('edition_name', '')}"
+                        cached_data[key] = item
+                    logger.info(f"Loaded {len(cached_data)} cached editions")
+                except Exception as e:
+                    logger.warning(f"Could not load cache: {e}")
+
+            # First, get overview prices for all models to check what needs refreshing
+            overview_prices = {}
+            if use_cache and cached_data:
+                logger.info("Checking overview prices to determine which models need refreshing...")
+                overview_prices = self._get_overview_prices()
 
             # Use the new model page approach - scrape each model page directly
             print("\n" + "="*60)
-            print("Scraping Toyota.nl Private Lease - Model Page Approach")
+            print("Scraping Toyota.nl Private Lease")
             print("="*60 + "\n")
 
-            for model_slug, model_name, filter_url in self.KNOWN_MODELS:
+            for model_slug, model_name in self.KNOWN_MODELS:
+                # Check if we can use cached data for this model
+                if use_cache and cached_data:
+                    cached_editions = [v for k, v in cached_data.items() if v.get('model') == model_name]
+
+                    if cached_editions:
+                        # Check if overview prices match cached prices (at default 72mo/5000km)
+                        needs_refresh = False
+                        model_overview = overview_prices.get(model_name, {})
+
+                        for cached in cached_editions:
+                            cached_price = cached.get('price_matrix', {}).get('72_5000')
+                            edition_name = cached.get('edition_name', '')
+                            overview_price = model_overview.get(edition_name)
+
+                            if overview_price and cached_price:
+                                if abs(overview_price - cached_price) > 5:  # More than €5 difference
+                                    needs_refresh = True
+                                    logger.info(f"  {model_name} {edition_name}: price changed €{cached_price} -> €{overview_price}")
+                                    break
+
+                        if not needs_refresh and cached_editions:
+                            print(f"\n{model_name}: Using cached data ({len(cached_editions)} editions)")
+                            for cached in cached_editions:
+                                edition = ToyotaEdition(
+                                    model=cached.get('model', model_name),
+                                    edition_name=cached.get('edition_name', ''),
+                                    edition_slug=cached.get('edition_slug', ''),
+                                    fuel_type=cached.get('fuel_type', 'Hybrid'),
+                                    transmission=cached.get('transmission', 'Automatic'),
+                                    power=cached.get('power'),
+                                    base_url=cached.get('base_url'),
+                                    configurator_url=cached.get('configurator_url'),
+                                    price_matrix=cached.get('price_matrix', {})
+                                )
+                                all_editions.append(edition)
+                            continue
+
+                # Need to scrape this model fresh
                 print(f"\nProcessing: {model_name}")
+                filter_url = f"{self.OVERVIEW_URL}#?model[]={model_slug}&durationMonths=72&yearlyKilometers=5000"
                 editions = self._scrape_model_page_prices(model_slug, model_name, filter_url)
 
                 if editions:
@@ -749,6 +820,60 @@ class ToyotaScraper:
 
         finally:
             self.close()
+
+    def _get_overview_prices(self) -> Dict[str, Dict[str, float]]:
+        """Get prices from overview page for cache validation.
+
+        Returns: {model_name: {edition_name: price}}
+        """
+        overview_prices = {}
+
+        try:
+            # Visit overview with default settings (72mo/5000km)
+            overview_url = f"{self.OVERVIEW_URL}#?durationMonths=72&yearlyKilometers=5000"
+            self._rate_limit()
+            self.driver.get(overview_url)
+            self._wait_for_page_load()
+            self._accept_cookies()
+            time.sleep(2)
+
+            soup = BeautifulSoup(self.driver.page_source, 'lxml')
+
+            # Find all model sections
+            for model_slug, model_name in self.KNOWN_MODELS:
+                overview_prices[model_name] = {}
+
+                # Try to find prices for this model on the page
+                # Look for cards containing the model name
+                model_cards = soup.find_all(string=re.compile(model_name, re.IGNORECASE))
+
+                for card_text in model_cards:
+                    # Find the parent card
+                    card = card_text.find_parent()
+                    for _ in range(10):
+                        if not card:
+                            break
+                        card_class = ' '.join(card.get('class', []))
+                        if 'card' in card_class.lower():
+                            # Found a card, look for price
+                            price_elem = card.select_one('[data-testid*="price"]')
+                            if price_elem:
+                                price_text = price_elem.get_text(strip=True)
+                                match = re.search(r'€\s*(\d+)', price_text)
+                                if match:
+                                    price = float(match.group(1))
+                                    # Try to get edition name
+                                    edition_elem = card.select_one('[data-testid="edition-name"], h4, h3')
+                                    edition_name = edition_elem.get_text(strip=True) if edition_elem else "Unknown"
+                                    if not self._is_price_text(edition_name):
+                                        overview_prices[model_name][edition_name] = price
+                            break
+                        card = card.find_parent()
+
+        except Exception as e:
+            logger.warning(f"Error getting overview prices: {e}")
+
+        return overview_prices
 
     def _try_direct_models(self) -> List[ToyotaEdition]:
         """Try accessing known model pages directly."""
