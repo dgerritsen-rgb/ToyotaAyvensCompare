@@ -88,7 +88,7 @@ class ModelMatcher:
         'land cruiser': ['land cruiser', 'landcruiser'],
     }
 
-    # Edition name mappings (Toyota.nl edition -> Ayvens patterns)
+    # Edition name mappings (Toyota.nl edition -> supplier patterns)
     EDITION_ALIASES = {
         'active': ['active'],
         'comfort': ['comfort'],
@@ -99,6 +99,11 @@ class ModelMatcher:
         'first edition': ['first edition', 'first'],
         'premium': ['premium'],
         'lounge': ['lounge'],
+        # Aygo X specific editions
+        'play': ['play'],
+        'pulse': ['pulse'],
+        'envy': ['envy'],
+        'jbl': ['jbl'],
     }
 
     @classmethod
@@ -141,7 +146,7 @@ class ModelMatcher:
 
         # Try to extract from patterns like "1.5 Hybrid Active" or "140 Active"
         patterns = [
-            r'\b(active|comfort|dynamic|executive|gr[ -]?sport|style|first|premium|lounge)\b',
+            r'\b(active|comfort|dynamic|executive|gr[ -]?sport|style|first|premium|lounge|play|pulse|envy|jbl)\b',
         ]
         for pattern in patterns:
             match = re.search(pattern, variant_lower)
@@ -155,7 +160,11 @@ class ModelMatcher:
 
     @classmethod
     def models_match(cls, toyota_model: str, ayvens_model: str) -> bool:
-        """Check if two model names match."""
+        """Check if two model names match.
+
+        Requires exact match or alias match - no partial string matching
+        to avoid "Yaris" matching "Yaris Cross" incorrectly.
+        """
         toyota_norm = cls.normalize_model(toyota_model)
         ayvens_norm = cls.normalize_model(ayvens_model)
 
@@ -163,15 +172,12 @@ class ModelMatcher:
         if toyota_norm == ayvens_norm:
             return True
 
-        # Check aliases
+        # Check aliases - both must be in the same alias group
         for base_model, aliases in cls.MODEL_ALIASES.items():
-            if toyota_norm in aliases or toyota_norm == base_model:
-                if ayvens_norm in aliases or ayvens_norm == base_model:
-                    return True
-
-        # Partial match (one contains the other)
-        if toyota_norm in ayvens_norm or ayvens_norm in toyota_norm:
-            return True
+            toyota_matches = (toyota_norm in aliases or toyota_norm == base_model)
+            ayvens_matches = (ayvens_norm in aliases or ayvens_norm == base_model)
+            if toyota_matches and ayvens_matches:
+                return True
 
         return False
 
@@ -321,68 +327,104 @@ def match_editions(
     matched_ayvens_ids = set()
     matched_leasys_ids = set()
 
+    def get_toyota_edition_key(toyota: dict) -> str:
+        """Extract edition key from Toyota edition_name or edition_slug for matching."""
+        edition_name = toyota.get('edition_name', '')
+
+        # First try to extract from edition_name if it's a real name (not "Edition N")
+        if edition_name and not edition_name.startswith('Edition '):
+            extracted = ModelMatcher.extract_edition(edition_name)
+            if extracted:
+                return extracted
+
+        # Try to extract from edition_slug (e.g., "toyota-yaris-hybrid-130-gr-sport-1" -> "gr-sport")
+        edition_slug = toyota.get('edition_slug', '')
+        if edition_slug:
+            extracted = ModelMatcher.extract_edition(edition_slug)
+            if extracted:
+                return extracted
+
+        # Fallback: use the full edition_name if available
+        return edition_name if edition_name else ''
+
+    def find_best_match(toyota: dict, supplier_offers: List[dict], matched_ids: set, get_id_func, get_edition_func) -> Optional[dict]:
+        """Find best matching supplier offer for a Toyota edition.
+
+        Prioritizes exact edition matches over fallback matches.
+        """
+        toyota_edition_key = get_toyota_edition_key(toyota)
+        toyota_edition_valid = ModelMatcher.is_valid_edition_name(toyota_edition_key)
+
+        exact_match = None
+        fallback_match = None
+
+        for offer in supplier_offers:
+            offer_id = get_id_func(offer)
+            if offer_id in matched_ids:
+                continue
+
+            supplier_edition = get_edition_func(offer)
+            supplier_edition_valid = ModelMatcher.is_valid_edition_name(supplier_edition)
+
+            # Check for exact edition match
+            if toyota_edition_valid and supplier_edition_valid:
+                if ModelMatcher.editions_match(toyota_edition_key, supplier_edition):
+                    exact_match = offer
+                    break  # Found exact match, use it
+
+            # Track first available as fallback (but keep looking for exact match)
+            if fallback_match is None:
+                fallback_match = offer
+
+        # Only use fallback if no exact match found AND the model has no other Toyota editions
+        # that could match this supplier edition (to avoid incorrect pairings)
+        if exact_match:
+            return exact_match
+
+        # Don't return fallback if we have valid editions that don't match
+        # This prevents incorrect pairings like "GR Sport" -> "Dynamic"
+        if fallback_match and toyota_edition_valid:
+            fallback_edition = get_edition_func(fallback_match)
+            if ModelMatcher.is_valid_edition_name(fallback_edition):
+                # Both have valid editions but they don't match - don't pair them
+                return None
+
+        return fallback_match
+
     for toyota in toyota_editions:
         toyota_model = toyota.get('model', '')
-        toyota_edition = toyota.get('edition_name', '')
-        toyota_edition_norm = ModelMatcher.normalize_edition(toyota_edition)
-        toyota_edition_valid = ModelMatcher.is_valid_edition_name(toyota_edition)
 
-        # Find matching Ayvens offers
+        # Find matching Ayvens offers (same model)
         matching_ayvens = []
         for ayvens_model_norm, ayvens_list in ayvens_by_model.items():
             if ModelMatcher.models_match(toyota_model, ayvens_list[0].get('model', '')):
                 matching_ayvens.extend(ayvens_list)
 
-        # Find matching Leasys offers
+        # Find matching Leasys offers (same model)
         matching_leasys = []
         for leasys_model_norm, leasys_list in leasys_by_model.items():
             if ModelMatcher.models_match(toyota_model, leasys_list[0].get('model', '')):
                 matching_leasys.extend(leasys_list)
 
         # Find best Ayvens match
-        ayvens_match = None
-        for ayvens in matching_ayvens:
-            ayvens_id = ayvens.get('vehicle_id', id(ayvens))
-            if ayvens_id in matched_ayvens_ids:
-                continue
-
-            ayvens_variant = ayvens.get('variant', '')
-            ayvens_edition = ayvens.get('edition_name', '') or ModelMatcher.extract_edition(ayvens_variant)
-            ayvens_edition_valid = ModelMatcher.is_valid_edition_name(ayvens_edition)
-
-            if toyota_edition_valid and ayvens_edition_valid:
-                if ModelMatcher.editions_match(toyota_edition, ayvens_edition):
-                    ayvens_match = ayvens
-                    break
-            elif ayvens_edition_valid:
-                ayvens_match = ayvens
-                break
-            elif not ayvens_match:
-                ayvens_match = ayvens
-
+        ayvens_match = find_best_match(
+            toyota,
+            matching_ayvens,
+            matched_ayvens_ids,
+            lambda a: a.get('vehicle_id', id(a)),
+            lambda a: a.get('edition_name', '') or ModelMatcher.extract_edition(a.get('variant', ''))
+        )
         if ayvens_match:
             matched_ayvens_ids.add(ayvens_match.get('vehicle_id', id(ayvens_match)))
 
         # Find best Leasys match
-        leasys_match = None
-        for leasys in matching_leasys:
-            leasys_id = leasys.get('offer_url', id(leasys))
-            if leasys_id in matched_leasys_ids:
-                continue
-
-            leasys_edition = leasys.get('edition_name', '') or leasys.get('variant', '')
-            leasys_edition_valid = ModelMatcher.is_valid_edition_name(leasys_edition)
-
-            if toyota_edition_valid and leasys_edition_valid:
-                if ModelMatcher.editions_match(toyota_edition, leasys_edition):
-                    leasys_match = leasys
-                    break
-            elif leasys_edition_valid:
-                leasys_match = leasys
-                break
-            elif not leasys_match:
-                leasys_match = leasys
-
+        leasys_match = find_best_match(
+            toyota,
+            matching_leasys,
+            matched_leasys_ids,
+            lambda l: l.get('offer_url', id(l)),
+            lambda l: l.get('edition_name', '') or l.get('variant', '')
+        )
         if leasys_match:
             matched_leasys_ids.add(leasys_match.get('offer_url', id(leasys_match)))
 
