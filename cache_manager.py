@@ -22,6 +22,9 @@ CACHE_TTL_HOURS = 48  # Skip overview check if cache is newer than this
 TOYOTA_CACHE = os.path.join(CACHE_DIR, "toyota_prices.json")
 AYVENS_CACHE = os.path.join(CACHE_DIR, "ayvens_toyota_prices.json")
 LEASYS_CACHE = os.path.join(CACHE_DIR, "leasys_toyota_prices.json")
+SUZUKI_CACHE = os.path.join(CACHE_DIR, "suzuki_prices.json")
+AYVENS_SUZUKI_CACHE = os.path.join(CACHE_DIR, "ayvens_suzuki_prices.json")
+LEASYS_SUZUKI_CACHE = os.path.join(CACHE_DIR, "leasys_suzuki_prices.json")
 
 
 @dataclass
@@ -211,6 +214,9 @@ def load_cached_prices(supplier: str) -> Optional[List[Dict[str, Any]]]:
         "toyota": TOYOTA_CACHE,
         "ayvens": AYVENS_CACHE,
         "leasys": LEASYS_CACHE,
+        "suzuki": SUZUKI_CACHE,
+        "ayvens_suzuki": AYVENS_SUZUKI_CACHE,
+        "leasys_suzuki": LEASYS_SUZUKI_CACHE,
     }
 
     cache_file = cache_files.get(supplier)
@@ -229,6 +235,9 @@ def save_cached_prices(supplier: str, data: List[Dict[str, Any]]):
         "toyota": TOYOTA_CACHE,
         "ayvens": AYVENS_CACHE,
         "leasys": LEASYS_CACHE,
+        "suzuki": SUZUKI_CACHE,
+        "ayvens_suzuki": AYVENS_SUZUKI_CACHE,
+        "leasys_suzuki": LEASYS_SUZUKI_CACHE,
     }
 
     cache_file = cache_files.get(supplier)

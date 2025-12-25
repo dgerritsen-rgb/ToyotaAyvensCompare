@@ -33,6 +33,7 @@ from cache_manager import (
 from toyota_scraper import ToyotaScraper, ToyotaEdition
 from ayvens_scraper import AyvensScraper, AyvensOffer
 from leasys_scraper import LeasysScraper, LeasysOffer
+from suzuki_scraper import SuzukiScraper, SuzukiEdition
 
 
 logging.basicConfig(
@@ -56,6 +57,7 @@ def check_changes(force: bool = False) -> Dict[str, Dict[str, str]]:
         'toyota': {},
         'ayvens': {},
         'leasys': {},
+        'suzuki': {},
     }
 
     cache_age = get_cache_age()
@@ -179,6 +181,39 @@ def check_changes(force: bool = False) -> Dict[str, Dict[str, str]]:
         logger.error(f"Error checking Leasys: {e}")
         print(f"  Error: {e}")
 
+    # Check Suzuki
+    print("\nChecking Suzuki.nl...")
+    try:
+        scraper = SuzukiScraper(headless=True)
+        current = scraper.get_overview_metadata()
+
+        cached_suzuki = metadata.get('suzuki', {}).get('models', {})
+
+        for model, current_meta in current.items():
+            cached_meta = cached_suzuki.get(model)
+            reason = needs_refresh(cached_meta, current_meta, model)
+            if reason:
+                changes['suzuki'][model] = reason
+                print(f"  {model}: {reason}")
+
+        if not changes['suzuki']:
+            print("  No changes detected")
+
+        # Clean stale cache entries for Suzuki
+        current_models = list(current.keys())
+        current_editions = {model: meta.get('editions', []) for model, meta in current.items()}
+        removed_count, removed_items = clean_stale_cache_entries('suzuki', current_models, current_editions)
+        if removed_count > 0:
+            print(f"  Cleaned {removed_count} stale entries from cache:")
+            for item in removed_items[:5]:
+                print(f"    - {item}")
+            if removed_count > 5:
+                print(f"    ... and {removed_count - 5} more")
+
+    except Exception as e:
+        logger.error(f"Error checking Suzuki: {e}")
+        print(f"  Error: {e}")
+
     # Summary
     total_changes = sum(len(c) for c in changes.values())
     print(f"\nSummary: {total_changes} model(s) need refresh")
@@ -193,6 +228,9 @@ def check_changes(force: bool = False) -> Dict[str, Dict[str, str]]:
         if changes['leasys']:
             models = ', '.join(changes['leasys'].keys())
             print(f"  python scrape.py --supplier leasys  # {models}")
+        if changes['suzuki']:
+            models = ', '.join(changes['suzuki'].keys())
+            print(f"  python scrape.py --supplier suzuki  # {models}")
         print(f"\nOr run 'python scrape.py all' to update all changes")
 
     return changes
@@ -295,6 +333,37 @@ def scrape_supplier(
             metadata[model]['editions_hash'] = compute_hash(metadata[model]['editions'])
             del metadata[model]['editions']
 
+    elif supplier == 'suzuki':
+        scraper = SuzukiScraper(headless=True)
+        if models:
+            for model in models:
+                model_editions = scraper.scrape_model(model)
+                offers.extend(model_editions)
+                if model != models[-1]:
+                    scraper = SuzukiScraper(headless=True)
+        else:
+            offers = scraper.scrape_all()
+
+        # Build metadata
+        for edition in offers:
+            model = edition.model if hasattr(edition, 'model') else edition.get('model', '')
+            if model not in metadata:
+                metadata[model] = {'edition_count': 0, 'editions': [], 'prices': []}
+            metadata[model]['edition_count'] += 1
+            metadata[model]['editions'].append(
+                edition.edition_name if hasattr(edition, 'edition_name') else edition.get('edition_name', '')
+            )
+            price_matrix = edition.price_matrix if hasattr(edition, 'price_matrix') else edition.get('price_matrix', {})
+            if price_matrix:
+                metadata[model]['prices'].append(min(price_matrix.values()))
+
+        # Compute hashes and cheapest prices
+        for model in metadata:
+            metadata[model]['editions_hash'] = compute_hash(metadata[model]['editions'])
+            metadata[model]['cheapest_price'] = min(metadata[model]['prices']) if metadata[model]['prices'] else None
+            del metadata[model]['editions']
+            del metadata[model]['prices']
+
     return offers, metadata
 
 
@@ -327,6 +396,7 @@ def scrape_all_smart(force: bool = False, parallel: bool = False):
             'toyota': {'all': 'forced'},
             'ayvens': {'all': 'forced'},
             'leasys': {'all': 'forced'},
+            'suzuki': {'all': 'forced'},
         }
 
     # Determine what to scrape
@@ -337,6 +407,8 @@ def scrape_all_smart(force: bool = False, parallel: bool = False):
         suppliers_to_scrape.append(('ayvens', None))
     if changes['leasys']:
         suppliers_to_scrape.append(('leasys', list(changes['leasys'].keys()) if 'all' not in changes['leasys'] else None))
+    if changes['suzuki']:
+        suppliers_to_scrape.append(('suzuki', list(changes['suzuki'].keys()) if 'all' not in changes['suzuki'] else None))
 
     if not suppliers_to_scrape:
         print("\nNothing to scrape.")
@@ -456,7 +528,7 @@ Examples:
 
     parser.add_argument(
         '--supplier',
-        choices=['toyota', 'ayvens', 'leasys'],
+        choices=['toyota', 'ayvens', 'leasys', 'suzuki'],
         help='Scrape specific supplier only'
     )
 
@@ -526,7 +598,7 @@ Examples:
         # Scrape specific model from all suppliers
         print(f"\nScraping model '{args.model}' from all suppliers...")
 
-        for supplier in ['toyota', 'leasys']:  # Ayvens doesn't support per-model
+        for supplier in ['toyota', 'leasys', 'suzuki']:  # Ayvens doesn't support per-model
             print(f"\n>>> {supplier.upper()} <<<")
             try:
                 offers, metadata = scrape_supplier(supplier, [args.model], args.force)

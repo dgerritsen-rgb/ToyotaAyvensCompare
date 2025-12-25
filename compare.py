@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-Toyota Private Lease Price Comparison Tool
+Private Lease Price Comparison Tool
 
-Compares Toyota.nl private lease prices with Ayvens and Leasys Toyota prices.
+Compares Toyota and Suzuki private lease prices across suppliers:
+- Toyota.nl vs Ayvens vs Leasys (for Toyota)
+- Ayvens vs Leasys (for Suzuki - suzuki.nl has no configurator)
+
 Reads from cached data - run 'python scrape.py' first to collect price data.
 
 Usage:
@@ -22,7 +25,8 @@ import pandas as pd
 from toyota_scraper import DURATIONS, MILEAGES
 from cache_manager import (
     load_metadata, get_cache_age, format_cache_age, CACHE_TTL_HOURS,
-    TOYOTA_CACHE, AYVENS_CACHE, LEASYS_CACHE
+    TOYOTA_CACHE, AYVENS_CACHE, LEASYS_CACHE,
+    SUZUKI_CACHE, AYVENS_SUZUKI_CACHE, LEASYS_SUZUKI_CACHE
 )
 
 
@@ -35,17 +39,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PriceComparison:
-    """Price comparison between Toyota.nl, Ayvens, and Leasys."""
+    """Price comparison between OEM site, Ayvens, and Leasys."""
+    brand: str  # 'toyota' or 'suzuki'
     model: str
-    toyota_variant: str
+    oem_variant: str  # Variant from OEM site (toyota.nl or suzuki.nl)
     ayvens_variant: str
     leasys_variant: str
     duration: int
     km_per_year: int
-    toyota_price: Optional[float]
+    oem_price: Optional[float]  # Price from OEM site
     ayvens_price: Optional[float]
     leasys_price: Optional[float]
-    toyota_url: Optional[str] = None
+    oem_url: Optional[str] = None
     ayvens_url: Optional[str] = None
     leasys_url: Optional[str] = None
 
@@ -53,8 +58,9 @@ class PriceComparison:
     def cheapest_supplier(self) -> Optional[str]:
         """Which supplier has the lowest price."""
         prices = []
-        if self.toyota_price:
-            prices.append(('Toyota', self.toyota_price))
+        oem_label = self.brand.title()  # 'Toyota' or 'Suzuki'
+        if self.oem_price:
+            prices.append((oem_label, self.oem_price))
         if self.ayvens_price:
             prices.append(('Ayvens', self.ayvens_price))
         if self.leasys_price:
@@ -70,17 +76,18 @@ class PriceComparison:
     @property
     def price_spread(self) -> Optional[float]:
         """Difference between highest and lowest price."""
-        prices = [p for p in [self.toyota_price, self.ayvens_price, self.leasys_price] if p]
+        prices = [p for p in [self.oem_price, self.ayvens_price, self.leasys_price] if p]
         if len(prices) < 2:
             return None
         return max(prices) - min(prices)
 
 
 class ModelMatcher:
-    """Matches Toyota models between Toyota.nl and Ayvens."""
+    """Matches models between OEM sites and suppliers (Ayvens, Leasys)."""
 
-    # Model name mappings (Toyota.nl name -> Ayvens patterns)
+    # Model name mappings (OEM name -> supplier patterns)
     MODEL_ALIASES = {
+        # Toyota models
         'aygo x': ['aygo x', 'aygo-x', 'aygox'],
         'yaris': ['yaris'],
         'yaris cross': ['yaris cross', 'yaris-cross'],
@@ -93,10 +100,18 @@ class ModelMatcher:
         'rav4': ['rav4', 'rav-4'],
         'bz4x': ['bz4x', 'bz-4x'],
         'land cruiser': ['land cruiser', 'landcruiser'],
+        # Suzuki models
+        'swift': ['swift'],
+        's-cross': ['s-cross', 's cross', 'scross'],
+        'vitara': ['vitara'],
+        'across': ['across'],
+        'swace': ['swace'],
+        'e-vitara': ['e-vitara', 'e vitara', 'evitara'],
     }
 
-    # Edition name mappings (Toyota.nl edition -> supplier patterns)
+    # Edition name mappings (OEM edition -> supplier patterns)
     EDITION_ALIASES = {
+        # Common editions
         'active': ['active'],
         'comfort': ['comfort'],
         'dynamic': ['dynamic'],
@@ -106,11 +121,15 @@ class ModelMatcher:
         'first edition': ['first edition', 'first'],
         'premium': ['premium'],
         'lounge': ['lounge'],
-        # Aygo X specific editions
+        # Toyota Aygo X specific editions
         'play': ['play'],
         'pulse': ['pulse'],
         'envy': ['envy'],
         'jbl': ['jbl'],
+        # Suzuki specific editions
+        'select': ['select'],
+        'select pro': ['select pro', 'selectpro'],
+        'allgrip': ['allgrip', 'all grip', 'all-grip'],
     }
 
     @classmethod
@@ -153,7 +172,7 @@ class ModelMatcher:
 
         # Try to extract from patterns like "1.5 Hybrid Active" or "140 Active"
         patterns = [
-            r'\b(active|comfort|dynamic|executive|gr[ -]?sport|style|first|premium|lounge|play|pulse|envy|jbl)\b',
+            r'\b(active|comfort|dynamic|executive|gr[ -]?sport|style|first|premium|lounge|play|pulse|envy|jbl|select|select pro|allgrip)\b',
         ]
         for pattern in patterns:
             match = re.search(pattern, variant_lower)
@@ -222,46 +241,75 @@ class ModelMatcher:
         return any(indicator in variant_lower for indicator in used_indicators)
 
 
-def load_cached_data() -> Tuple[Optional[List[dict]], Optional[List[dict]], Optional[List[dict]]]:
-    """Load cached price data from files."""
-    toyota_data = None
-    ayvens_data = None
-    leasys_data = None
+def load_cached_data() -> dict:
+    """Load cached price data from files.
 
+    Returns:
+        Dictionary with keys: 'toyota', 'ayvens_toyota', 'leasys_toyota',
+                              'suzuki', 'ayvens_suzuki', 'leasys_suzuki'
+    """
+    data = {
+        'toyota': None,
+        'ayvens_toyota': None,
+        'leasys_toyota': None,
+        'suzuki': None,
+        'ayvens_suzuki': None,
+        'leasys_suzuki': None,
+    }
+
+    # Toyota data
     if os.path.exists(TOYOTA_CACHE):
         with open(TOYOTA_CACHE, 'r') as f:
-            toyota_data = json.load(f)
-        logger.info(f"Loaded {len(toyota_data)} Toyota editions from cache")
+            data['toyota'] = json.load(f)
+        logger.info(f"Loaded {len(data['toyota'])} Toyota editions from cache")
 
     if os.path.exists(AYVENS_CACHE):
         with open(AYVENS_CACHE, 'r') as f:
-            ayvens_data = json.load(f)
-        logger.info(f"Loaded {len(ayvens_data)} Ayvens offers from cache")
+            data['ayvens_toyota'] = json.load(f)
+        logger.info(f"Loaded {len(data['ayvens_toyota'])} Ayvens Toyota offers from cache")
 
     if os.path.exists(LEASYS_CACHE):
         with open(LEASYS_CACHE, 'r') as f:
-            leasys_data = json.load(f)
-        logger.info(f"Loaded {len(leasys_data)} Leasys offers from cache")
+            data['leasys_toyota'] = json.load(f)
+        logger.info(f"Loaded {len(data['leasys_toyota'])} Leasys Toyota offers from cache")
 
-    return toyota_data, ayvens_data, leasys_data
+    # Suzuki data
+    if os.path.exists(SUZUKI_CACHE):
+        with open(SUZUKI_CACHE, 'r') as f:
+            data['suzuki'] = json.load(f)
+        logger.info(f"Loaded {len(data['suzuki'])} Suzuki editions from cache")
+
+    if os.path.exists(AYVENS_SUZUKI_CACHE):
+        with open(AYVENS_SUZUKI_CACHE, 'r') as f:
+            data['ayvens_suzuki'] = json.load(f)
+        logger.info(f"Loaded {len(data['ayvens_suzuki'])} Ayvens Suzuki offers from cache")
+
+    if os.path.exists(LEASYS_SUZUKI_CACHE):
+        with open(LEASYS_SUZUKI_CACHE, 'r') as f:
+            data['leasys_suzuki'] = json.load(f)
+        logger.info(f"Loaded {len(data['leasys_suzuki'])} Leasys Suzuki offers from cache")
+
+    return data
 
 
 def match_editions(
-    toyota_editions: List[dict],
+    oem_editions: List[dict],
     ayvens_offers: List[dict],
     leasys_offers: List[dict],
+    brand: str = 'toyota',
     exclude_used: bool = True
 ) -> List[Tuple[dict, Optional[dict], Optional[dict]]]:
-    """Match Toyota editions with Ayvens and Leasys offers.
+    """Match OEM editions with Ayvens and Leasys offers.
 
     Args:
-        toyota_editions: List of Toyota editions (primary source)
+        oem_editions: List of OEM editions (primary source - from toyota.nl or suzuki.nl)
         ayvens_offers: List of Ayvens offers
         leasys_offers: List of Leasys offers
+        brand: 'toyota' or 'suzuki'
         exclude_used: If True, exclude vehicles that are clearly used
 
     Returns:
-        List of tuples: (toyota_edition, ayvens_match_or_none, leasys_match_or_none)
+        List of tuples: (oem_edition, ayvens_match_or_none, leasys_match_or_none)
     """
     matches = []
 
@@ -296,9 +344,9 @@ def match_editions(
     matched_ayvens_ids = set()
     matched_leasys_ids = set()
 
-    def get_toyota_edition_key(toyota: dict) -> str:
-        """Extract edition key from Toyota edition_name or edition_slug for matching."""
-        edition_name = toyota.get('edition_name', '')
+    def get_oem_edition_key(oem: dict) -> str:
+        """Extract edition key from OEM edition_name or edition_slug for matching."""
+        edition_name = oem.get('edition_name', '')
 
         # First try to extract from edition_name if it's a real name (not "Edition N")
         if edition_name and not edition_name.startswith('Edition '):
@@ -307,7 +355,7 @@ def match_editions(
                 return extracted
 
         # Try to extract from edition_slug (e.g., "toyota-yaris-hybrid-130-gr-sport-1" -> "gr-sport")
-        edition_slug = toyota.get('edition_slug', '')
+        edition_slug = oem.get('edition_slug', '')
         if edition_slug:
             extracted = ModelMatcher.extract_edition(edition_slug)
             if extracted:
@@ -316,13 +364,13 @@ def match_editions(
         # Fallback: use the full edition_name if available
         return edition_name if edition_name else ''
 
-    def find_best_match(toyota: dict, supplier_offers: List[dict], matched_ids: set, get_id_func, get_edition_func) -> Optional[dict]:
-        """Find best matching supplier offer for a Toyota edition.
+    def find_best_match(oem: dict, supplier_offers: List[dict], matched_ids: set, get_id_func, get_edition_func) -> Optional[dict]:
+        """Find best matching supplier offer for an OEM edition.
 
         Prioritizes exact edition matches over fallback matches.
         """
-        toyota_edition_key = get_toyota_edition_key(toyota)
-        toyota_edition_valid = ModelMatcher.is_valid_edition_name(toyota_edition_key)
+        oem_edition_key = get_oem_edition_key(oem)
+        oem_edition_valid = ModelMatcher.is_valid_edition_name(oem_edition_key)
 
         exact_match = None
         fallback_match = None
@@ -336,8 +384,8 @@ def match_editions(
             supplier_edition_valid = ModelMatcher.is_valid_edition_name(supplier_edition)
 
             # Check for exact edition match
-            if toyota_edition_valid and supplier_edition_valid:
-                if ModelMatcher.editions_match(toyota_edition_key, supplier_edition):
+            if oem_edition_valid and supplier_edition_valid:
+                if ModelMatcher.editions_match(oem_edition_key, supplier_edition):
                     exact_match = offer
                     break  # Found exact match, use it
 
@@ -345,14 +393,14 @@ def match_editions(
             if fallback_match is None:
                 fallback_match = offer
 
-        # Only use fallback if no exact match found AND the model has no other Toyota editions
+        # Only use fallback if no exact match found AND the model has no other OEM editions
         # that could match this supplier edition (to avoid incorrect pairings)
         if exact_match:
             return exact_match
 
         # Don't return fallback if we have valid editions that don't match
         # This prevents incorrect pairings like "GR Sport" -> "Dynamic"
-        if fallback_match and toyota_edition_valid:
+        if fallback_match and oem_edition_valid:
             fallback_edition = get_edition_func(fallback_match)
             if ModelMatcher.is_valid_edition_name(fallback_edition):
                 # Both have valid editions but they don't match - don't pair them
@@ -360,24 +408,24 @@ def match_editions(
 
         return fallback_match
 
-    for toyota in toyota_editions:
-        toyota_model = toyota.get('model', '')
+    for oem in oem_editions:
+        oem_model = oem.get('model', '')
 
         # Find matching Ayvens offers (same model)
         matching_ayvens = []
         for ayvens_model_norm, ayvens_list in ayvens_by_model.items():
-            if ModelMatcher.models_match(toyota_model, ayvens_list[0].get('model', '')):
+            if ModelMatcher.models_match(oem_model, ayvens_list[0].get('model', '')):
                 matching_ayvens.extend(ayvens_list)
 
         # Find matching Leasys offers (same model)
         matching_leasys = []
         for leasys_model_norm, leasys_list in leasys_by_model.items():
-            if ModelMatcher.models_match(toyota_model, leasys_list[0].get('model', '')):
+            if ModelMatcher.models_match(oem_model, leasys_list[0].get('model', '')):
                 matching_leasys.extend(leasys_list)
 
         # Find best Ayvens match
         ayvens_match = find_best_match(
-            toyota,
+            oem,
             matching_ayvens,
             matched_ayvens_ids,
             lambda a: a.get('vehicle_id', id(a)),
@@ -388,7 +436,7 @@ def match_editions(
 
         # Find best Leasys match
         leasys_match = find_best_match(
-            toyota,
+            oem,
             matching_leasys,
             matched_leasys_ids,
             lambda l: l.get('offer_url', id(l)),
@@ -399,9 +447,9 @@ def match_editions(
 
         # Only add if at least one supplier match
         if ayvens_match or leasys_match:
-            matches.append((toyota, ayvens_match, leasys_match))
+            matches.append((oem, ayvens_match, leasys_match))
 
-    logger.info(f"Found {len(matches)} Toyota editions with supplier matches")
+    logger.info(f"Found {len(matches)} {brand.title()} editions with supplier matches")
     logger.info(f"  - {sum(1 for _, a, _ in matches if a)} with Ayvens match")
     logger.info(f"  - {sum(1 for _, _, l in matches if l)} with Leasys match")
     return matches
@@ -415,14 +463,24 @@ def is_valid_price(price: Optional[float]) -> bool:
     return 100 <= price <= 2000
 
 
-def extract_toyota_display_name(toyota: dict) -> str:
-    """Extract a clean display name for Toyota variant from edition_slug.
+def extract_oem_display_name(oem: dict, brand: str = 'toyota') -> str:
+    """Extract a clean display name for OEM variant from edition_slug.
 
-    Converts slugs like 'toyota-yaris-cross-toyota-yaris-cross-hybrid-115-active-automaat-1'
+    For Toyota: Converts slugs like 'toyota-yaris-cross-toyota-yaris-cross-hybrid-115-active-automaat-1'
     to 'Hybrid 115 Active'
+    For Suzuki: Uses edition_name directly
     """
     import re
-    slug = toyota.get('edition_slug', '')
+
+    # For Suzuki, use edition_name directly (simpler structure)
+    if brand == 'suzuki':
+        edition_name = oem.get('edition_name', '') or oem.get('variant', '')
+        if edition_name:
+            return edition_name.title()
+        return oem.get('model', '').title()
+
+    # Toyota logic
+    slug = oem.get('edition_slug', '')
 
     # Try to extract from slug (e.g., "hybrid-115-active-automaat" or "hybrid-140-gr-sport")
     # Look for pattern: hybrid-{power}-{edition}-automaat (edition can be multi-word like gr-sport)
@@ -439,7 +497,7 @@ def extract_toyota_display_name(toyota: dict) -> str:
         return f"{fuel} {power} {edition}"
 
     # Fallback to edition_name if extraction fails
-    edition_name = toyota.get('edition_name', '')
+    edition_name = oem.get('edition_name', '')
     if edition_name and not edition_name.startswith('Edition '):
         return edition_name
 
@@ -515,23 +573,26 @@ def extract_leasys_display_name(leasys: dict) -> str:
     return edition if edition else model
 
 
-def compare_prices(matches: List[Tuple[dict, Optional[dict], Optional[dict]]]) -> List[PriceComparison]:
+def compare_prices(matches: List[Tuple[dict, Optional[dict], Optional[dict]]], brand: str = 'toyota') -> List[PriceComparison]:
     """Generate price comparisons for all matched models."""
     comparisons = []
 
     # Leasys only supports mileages up to 20000 km
     LEASYS_MILEAGES = [5000, 10000, 15000, 20000]
 
-    for toyota, ayvens, leasys in matches:
-        toyota_prices = toyota.get('price_matrix', {})
+    for oem, ayvens, leasys in matches:
+        oem_prices = oem.get('price_matrix', {})
         ayvens_prices = ayvens.get('price_matrix', {}) if ayvens else {}
         leasys_prices = leasys.get('price_matrix', {}) if leasys else {}
 
         # Get URLs for this edition
-        toyota_url = toyota.get('configurator_url', '')
-        if not toyota_url:
-            model_slug = toyota.get('model', '').lower().replace(' ', '-')
-            toyota_url = f"https://www.toyota.nl/private-lease/modellen#?model[]={model_slug}&durationMonths=72&yearlyKilometers=5000"
+        oem_url = oem.get('configurator_url', '')
+        if not oem_url:
+            model_slug = oem.get('model', '').lower().replace(' ', '-')
+            if brand == 'toyota':
+                oem_url = f"https://www.toyota.nl/private-lease/modellen#?model[]={model_slug}&durationMonths=72&yearlyKilometers=5000"
+            else:
+                oem_url = f"https://www.suzuki.nl/auto/private-lease/{model_slug}/"
         ayvens_url = ayvens.get('offer_url', '') if ayvens else ''
         leasys_url = leasys.get('offer_url', '') if leasys else ''
 
@@ -539,30 +600,137 @@ def compare_prices(matches: List[Tuple[dict, Optional[dict], Optional[dict]]]) -
             for km in MILEAGES:
                 key = f"{duration}_{km}"
 
-                toyota_price = toyota_prices.get(key)
+                oem_price = oem_prices.get(key)
                 ayvens_price = ayvens_prices.get(key)
                 # Leasys only has prices for km <= 20000
                 leasys_price = leasys_prices.get(key) if km in LEASYS_MILEAGES else None
 
                 # Filter out invalid prices
-                if not is_valid_price(toyota_price):
-                    toyota_price = None
+                if not is_valid_price(oem_price):
+                    oem_price = None
                 if not is_valid_price(ayvens_price):
                     ayvens_price = None
                 if not is_valid_price(leasys_price):
                     leasys_price = None
 
                 comparison = PriceComparison(
-                    model=toyota.get('model', 'Unknown'),
-                    toyota_variant=extract_toyota_display_name(toyota),
+                    brand=brand,
+                    model=oem.get('model', 'Unknown'),
+                    oem_variant=extract_oem_display_name(oem, brand),
                     ayvens_variant=extract_ayvens_display_name(ayvens) if ayvens else '',
                     leasys_variant=extract_leasys_display_name(leasys) if leasys else '',
                     duration=duration,
                     km_per_year=km,
-                    toyota_price=toyota_price,
+                    oem_price=oem_price,
                     ayvens_price=ayvens_price,
                     leasys_price=leasys_price,
-                    toyota_url=toyota_url,
+                    oem_url=oem_url,
+                    ayvens_url=ayvens_url,
+                    leasys_url=leasys_url,
+                )
+                comparisons.append(comparison)
+
+    return comparisons
+
+
+def match_suzuki_editions(
+    ayvens_offers: List[dict],
+    leasys_offers: List[dict]
+) -> List[Tuple[dict, Optional[dict]]]:
+    """Match Suzuki Ayvens offers with Leasys offers (no OEM source).
+
+    Args:
+        ayvens_offers: List of Ayvens Suzuki offers
+        leasys_offers: List of Leasys Suzuki offers
+
+    Returns:
+        List of tuples: (ayvens_offer, leasys_match_or_none)
+    """
+    matches = []
+
+    # Group Leasys by model
+    leasys_by_model = {}
+    for l in leasys_offers:
+        model = ModelMatcher.normalize_model(l.get('model', ''))
+        if model not in leasys_by_model:
+            leasys_by_model[model] = []
+        leasys_by_model[model].append(l)
+
+    # Track matched Leasys offers
+    matched_leasys_ids = set()
+
+    for ayvens in ayvens_offers:
+        ayvens_model = ayvens.get('model', '')
+        ayvens_edition = ayvens.get('edition_name', '') or ModelMatcher.extract_edition(ayvens.get('variant', ''))
+
+        # Find matching Leasys offers
+        leasys_match = None
+        for leasys_model_norm, leasys_list in leasys_by_model.items():
+            if ModelMatcher.models_match(ayvens_model, leasys_list[0].get('model', '')):
+                for leasys in leasys_list:
+                    leasys_id = leasys.get('offer_url', id(leasys))
+                    if leasys_id in matched_leasys_ids:
+                        continue
+
+                    leasys_edition = leasys.get('edition_name', '') or leasys.get('variant', '')
+
+                    # Check for edition match
+                    if ModelMatcher.editions_match(ayvens_edition, leasys_edition):
+                        leasys_match = leasys
+                        matched_leasys_ids.add(leasys_id)
+                        break
+
+                if leasys_match:
+                    break
+
+        matches.append((ayvens, leasys_match))
+
+    logger.info(f"Found {len(matches)} Suzuki Ayvens offers")
+    logger.info(f"  - {sum(1 for _, l in matches if l)} with Leasys match")
+    return matches
+
+
+def compare_suzuki_prices(matches: List[Tuple[dict, Optional[dict]]]) -> List[PriceComparison]:
+    """Generate price comparisons for Suzuki (Ayvens vs Leasys only)."""
+    comparisons = []
+
+    # Leasys only supports mileages up to 20000 km
+    LEASYS_MILEAGES = [5000, 10000, 15000, 20000]
+
+    for ayvens, leasys in matches:
+        ayvens_prices = ayvens.get('price_matrix', {})
+        leasys_prices = leasys.get('price_matrix', {}) if leasys else {}
+
+        # Get URLs
+        ayvens_url = ayvens.get('offer_url', '')
+        leasys_url = leasys.get('offer_url', '') if leasys else ''
+
+        for duration in DURATIONS:
+            for km in MILEAGES:
+                key = f"{duration}_{km}"
+
+                ayvens_price = ayvens_prices.get(key)
+                # Leasys only has prices for km <= 20000
+                leasys_price = leasys_prices.get(key) if km in LEASYS_MILEAGES else None
+
+                # Filter out invalid prices
+                if not is_valid_price(ayvens_price):
+                    ayvens_price = None
+                if not is_valid_price(leasys_price):
+                    leasys_price = None
+
+                comparison = PriceComparison(
+                    brand='suzuki',
+                    model=ayvens.get('model', 'Unknown'),
+                    oem_variant='',  # No OEM source for Suzuki
+                    ayvens_variant=extract_ayvens_display_name(ayvens),
+                    leasys_variant=extract_leasys_display_name(leasys) if leasys else '',
+                    duration=duration,
+                    km_per_year=km,
+                    oem_price=None,  # No OEM price for Suzuki
+                    ayvens_price=ayvens_price,
+                    leasys_price=leasys_price,
+                    oem_url='',
                     ayvens_url=ayvens_url,
                     leasys_url=leasys_url,
                 )
@@ -573,128 +741,155 @@ def compare_prices(matches: List[Tuple[dict, Optional[dict], Optional[dict]]]) -
 
 def generate_report(comparisons: List[PriceComparison]) -> str:
     """Generate a text report of the price comparison."""
+    # Separate by brand
+    toyota_comparisons = [c for c in comparisons if c.brand == 'toyota']
+    suzuki_comparisons = [c for c in comparisons if c.brand == 'suzuki']
+
     report_lines = [
         "=" * 100,
-        "TOYOTA PRIVATE LEASE PRICE COMPARISON: TOYOTA.NL vs AYVENS vs LEASYS",
+        "PRIVATE LEASE PRICE COMPARISON: OEM vs AYVENS vs LEASYS",
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "=" * 100,
         "",
-        "NOTE: Please verify matches using the URLs below. Toyota editions are matched",
+        "NOTE: Please verify matches using the URLs below. Editions are matched",
         "      with supplier editions by model - verify edition names match at each URL.",
         "      Leasys only offers mileages up to 20,000 km/year.",
         "",
     ]
 
-    # Summary statistics
-    valid_comparisons = [c for c in comparisons if c.toyota_price and (c.ayvens_price or c.leasys_price)]
+    # Overall summary statistics (across all brands)
+    valid_comparisons = [c for c in comparisons if c.oem_price or c.ayvens_price or c.leasys_price]
+    valid_with_multiple = [c for c in valid_comparisons if sum([c.oem_price is not None, c.ayvens_price is not None, c.leasys_price is not None]) >= 2]
 
-    if valid_comparisons:
-        toyota_cheapest = sum(1 for c in valid_comparisons if c.cheapest_supplier == 'Toyota')
-        ayvens_cheapest = sum(1 for c in valid_comparisons if c.cheapest_supplier == 'Ayvens')
-        leasys_cheapest = sum(1 for c in valid_comparisons if c.cheapest_supplier == 'Leasys')
+    if valid_with_multiple:
+        oem_cheapest = sum(1 for c in valid_with_multiple if c.cheapest_supplier in ['Toyota', 'Suzuki'])
+        ayvens_cheapest = sum(1 for c in valid_with_multiple if c.cheapest_supplier == 'Ayvens')
+        leasys_cheapest = sum(1 for c in valid_with_multiple if c.cheapest_supplier == 'Leasys')
 
-        spreads = [c.price_spread for c in valid_comparisons if c.price_spread]
+        spreads = [c.price_spread for c in valid_with_multiple if c.price_spread]
         avg_spread = sum(spreads) / len(spreads) if spreads else 0
         max_spread = max(spreads) if spreads else 0
 
         report_lines.extend([
-            "OVERALL SUMMARY",
+            "OVERALL SUMMARY (ALL BRANDS)",
             "-" * 100,
-            f"Total price points compared: {len(valid_comparisons)}",
-            f"Toyota.nl cheapest: {toyota_cheapest} ({100*toyota_cheapest/len(valid_comparisons):.1f}%)",
-            f"Ayvens cheapest: {ayvens_cheapest} ({100*ayvens_cheapest/len(valid_comparisons):.1f}%)",
-            f"Leasys cheapest: {leasys_cheapest} ({100*leasys_cheapest/len(valid_comparisons):.1f}%)",
-            f"Average price spread: €{avg_spread:.0f}/mo",
-            f"Maximum price spread: €{max_spread:.0f}/mo",
+            f"Total price points compared: {len(valid_with_multiple)}",
+            f"OEM (Toyota/Suzuki) cheapest: {oem_cheapest} ({100*oem_cheapest/len(valid_with_multiple):.1f}%)" if valid_with_multiple else "",
+            f"Ayvens cheapest: {ayvens_cheapest} ({100*ayvens_cheapest/len(valid_with_multiple):.1f}%)" if valid_with_multiple else "",
+            f"Leasys cheapest: {leasys_cheapest} ({100*leasys_cheapest/len(valid_with_multiple):.1f}%)" if valid_with_multiple else "",
+            f"Average price spread: {avg_spread:.0f}/mo",
+            f"Maximum price spread: {max_spread:.0f}/mo",
             "",
         ])
 
-    # Group by model and edition
-    model_editions = {}
-    edition_urls = {}
-    for c in comparisons:
-        # Only include if Toyota price and at least one supplier price
-        if not c.toyota_price:
-            continue
-        if not (c.ayvens_price or c.leasys_price):
+    # Generate report sections for each brand
+    for brand, brand_comparisons in [('Toyota', toyota_comparisons), ('Suzuki', suzuki_comparisons)]:
+        if not brand_comparisons:
             continue
 
-        key = (c.model, c.toyota_variant, c.ayvens_variant, c.leasys_variant)
-        if key not in model_editions:
-            model_editions[key] = []
-            edition_urls[key] = (c.toyota_url, c.ayvens_url, c.leasys_url)
-        model_editions[key].append(c)
-
-    # Sort by model name
-    sorted_keys = sorted(model_editions.keys(), key=lambda x: (x[0], x[1]))
-
-    current_model = None
-    for (model, toyota_variant, ayvens_variant, leasys_variant), edition_comparisons in [(k, model_editions[k]) for k in sorted_keys]:
-        if not edition_comparisons:
-            continue
-
-        # Model header
-        if model != current_model:
-            current_model = model
-            report_lines.extend([
-                "",
-                "=" * 100,
-                f"MODEL: {model.upper()}",
-                "=" * 100,
-            ])
-
-        # Determine display edition name
-        display_variant = ayvens_variant or leasys_variant or toyota_variant
-        ayvens_edition = ModelMatcher.extract_edition(display_variant)
-        if ayvens_edition:
-            display_variant = ayvens_edition
-
-        # Get URLs
-        toyota_url, ayvens_url, leasys_url = edition_urls.get((model, toyota_variant, ayvens_variant, leasys_variant), ('', '', ''))
-
-        # Edition header with URLs
         report_lines.extend([
             "",
-            f"  Edition: {display_variant}",
-            f"  Toyota variant: {toyota_variant}",
+            "#" * 100,
+            f"# {brand.upper()} COMPARISONS",
+            "#" * 100,
         ])
-        if ayvens_variant:
-            report_lines.append(f"  Ayvens variant: {ayvens_variant}")
-        if leasys_variant:
-            report_lines.append(f"  Leasys variant: {leasys_variant}")
-        report_lines.append("")
-        report_lines.append(f"  Toyota URL: {toyota_url}" if toyota_url else "  Toyota URL: N/A")
-        if ayvens_variant:
-            report_lines.append(f"  Ayvens URL: {ayvens_url}" if ayvens_url else "  Ayvens URL: N/A")
-        if leasys_variant:
-            report_lines.append(f"  Leasys URL: {leasys_url}" if leasys_url else "  Leasys URL: N/A")
-        report_lines.append("")
 
-        # Price comparison table
-        header = f"    {'Duration':<8} {'KM/Year':<10} {'Toyota':<10} {'Ayvens':<10} {'Leasys':<10} {'Spread':<10} {'Cheapest':<10}"
-        report_lines.append(header)
-        report_lines.append("    " + "-" * 78)
+        # Group by model and edition
+        model_editions = {}
+        edition_urls = {}
+        for c in brand_comparisons:
+            has_oem = c.oem_price is not None
+            has_ayvens = c.ayvens_price is not None
+            has_leasys = c.leasys_price is not None
 
-        for c in edition_comparisons:
-            toyota_str = f"€{c.toyota_price:.0f}" if c.toyota_price else "N/A"
-            ayvens_str = f"€{c.ayvens_price:.0f}" if c.ayvens_price else "N/A"
-            leasys_str = f"€{c.leasys_price:.0f}" if c.leasys_price else "N/A"
-            spread_str = f"€{c.price_spread:.0f}" if c.price_spread else "N/A"
-            cheapest = c.cheapest_supplier or "N/A"
+            # For Toyota: require at least two prices to compare
+            # For Suzuki: include if we have at least one price (show availability)
+            if brand == 'Toyota':
+                if sum([has_oem, has_ayvens, has_leasys]) < 2:
+                    continue
+            else:  # Suzuki
+                if not (has_ayvens or has_leasys):
+                    continue
 
-            report_lines.append(
-                f"    {c.duration:<8} {c.km_per_year:<10} {toyota_str:<10} {ayvens_str:<10} {leasys_str:<10} {spread_str:<10} {cheapest:<10}"
-            )
+            key = (c.model, c.oem_variant, c.ayvens_variant, c.leasys_variant)
+            if key not in model_editions:
+                model_editions[key] = []
+                edition_urls[key] = (c.oem_url, c.ayvens_url, c.leasys_url)
+            model_editions[key].append(c)
 
-        # Edition summary
-        edition_spreads = [c.price_spread for c in edition_comparisons if c.price_spread]
-        if edition_spreads:
-            avg_spread = sum(edition_spreads) / len(edition_spreads)
-            toyota_wins = sum(1 for c in edition_comparisons if c.cheapest_supplier == 'Toyota')
-            ayvens_wins = sum(1 for c in edition_comparisons if c.cheapest_supplier == 'Ayvens')
-            leasys_wins = sum(1 for c in edition_comparisons if c.cheapest_supplier == 'Leasys')
+        # Sort by model name
+        sorted_keys = sorted(model_editions.keys(), key=lambda x: (x[0], x[1]))
+
+        current_model = None
+        for (model, oem_variant, ayvens_variant, leasys_variant), edition_comparisons in [(k, model_editions[k]) for k in sorted_keys]:
+            if not edition_comparisons:
+                continue
+
+            # Model header
+            if model != current_model:
+                current_model = model
+                report_lines.extend([
+                    "",
+                    "=" * 100,
+                    f"MODEL: {model.upper()}",
+                    "=" * 100,
+                ])
+
+            # Determine display edition name
+            display_variant = ayvens_variant or leasys_variant or oem_variant
+            extracted_edition = ModelMatcher.extract_edition(display_variant)
+            if extracted_edition:
+                display_variant = extracted_edition
+
+            # Get URLs
+            oem_url, ayvens_url, leasys_url = edition_urls.get((model, oem_variant, ayvens_variant, leasys_variant), ('', '', ''))
+
+            # Edition header with URLs
+            report_lines.extend([
+                "",
+                f"  Edition: {display_variant}",
+            ])
+            if oem_variant:
+                report_lines.append(f"  {brand} variant: {oem_variant}")
+            if ayvens_variant:
+                report_lines.append(f"  Ayvens variant: {ayvens_variant}")
+            if leasys_variant:
+                report_lines.append(f"  Leasys variant: {leasys_variant}")
             report_lines.append("")
-            report_lines.append(f"    Summary: Avg spread €{avg_spread:.0f}/mo | Cheapest: Toyota {toyota_wins}x, Ayvens {ayvens_wins}x, Leasys {leasys_wins}x")
+            if oem_variant and oem_url:
+                report_lines.append(f"  {brand} URL: {oem_url}")
+            if ayvens_variant:
+                report_lines.append(f"  Ayvens URL: {ayvens_url}" if ayvens_url else "  Ayvens URL: N/A")
+            if leasys_variant:
+                report_lines.append(f"  Leasys URL: {leasys_url}" if leasys_url else "  Leasys URL: N/A")
+            report_lines.append("")
+
+            # Price comparison table - adjust column header based on brand
+            oem_col = brand[:7]  # "Toyota" or "Suzuki"
+            header = f"    {'Duration':<8} {'KM/Year':<10} {oem_col:<10} {'Ayvens':<10} {'Leasys':<10} {'Spread':<10} {'Cheapest':<10}"
+            report_lines.append(header)
+            report_lines.append("    " + "-" * 78)
+
+            for c in edition_comparisons:
+                oem_str = f"{c.oem_price:.0f}" if c.oem_price else "N/A"
+                ayvens_str = f"{c.ayvens_price:.0f}" if c.ayvens_price else "N/A"
+                leasys_str = f"{c.leasys_price:.0f}" if c.leasys_price else "N/A"
+                spread_str = f"{c.price_spread:.0f}" if c.price_spread else "N/A"
+                cheapest = c.cheapest_supplier or "N/A"
+
+                report_lines.append(
+                    f"    {c.duration:<8} {c.km_per_year:<10} {oem_str:<10} {ayvens_str:<10} {leasys_str:<10} {spread_str:<10} {cheapest:<10}"
+                )
+
+            # Edition summary
+            edition_spreads = [c.price_spread for c in edition_comparisons if c.price_spread]
+            if edition_spreads:
+                avg_spread = sum(edition_spreads) / len(edition_spreads)
+                oem_wins = sum(1 for c in edition_comparisons if c.cheapest_supplier == brand)
+                ayvens_wins = sum(1 for c in edition_comparisons if c.cheapest_supplier == 'Ayvens')
+                leasys_wins = sum(1 for c in edition_comparisons if c.cheapest_supplier == 'Leasys')
+                report_lines.append("")
+                report_lines.append(f"    Summary: Avg spread {avg_spread:.0f}/mo | Cheapest: {brand} {oem_wins}x, Ayvens {ayvens_wins}x, Leasys {leasys_wins}x")
 
     report_lines.extend([
         "",
@@ -703,6 +898,7 @@ def generate_report(comparisons: List[PriceComparison]) -> str:
         "  - Spread = difference between highest and lowest price",
         "  - Cheapest = supplier with lowest price for that configuration",
         "  - N/A for Leasys at 25000/30000 km = Leasys doesn't offer these mileages",
+        "  - N/A for Suzuki OEM = suzuki.nl has no interactive configurator",
         "=" * 100,
         "END OF REPORT",
         "=" * 100,
@@ -716,18 +912,19 @@ def generate_csv(comparisons: List[PriceComparison], filename: str):
     data = []
     for c in comparisons:
         data.append({
+            'brand': c.brand,
             'model': c.model,
-            'toyota_variant': c.toyota_variant,
+            'oem_variant': c.oem_variant,
             'ayvens_variant': c.ayvens_variant,
             'leasys_variant': c.leasys_variant,
             'duration_months': c.duration,
             'km_per_year': c.km_per_year,
-            'toyota_price': c.toyota_price,
+            'oem_price': c.oem_price,
             'ayvens_price': c.ayvens_price,
             'leasys_price': c.leasys_price,
             'price_spread': c.price_spread,
             'cheapest_supplier': c.cheapest_supplier,
-            'toyota_url': c.toyota_url,
+            'oem_url': c.oem_url,
             'ayvens_url': c.ayvens_url,
             'leasys_url': c.leasys_url,
         })
@@ -746,7 +943,7 @@ def main():
     metadata = load_metadata()
 
     print("\n" + "="*70)
-    print("TOYOTA PRIVATE LEASE PRICE COMPARISON")
+    print("PRIVATE LEASE PRICE COMPARISON (Toyota & Suzuki)")
     print("="*70)
 
     if cache_age:
@@ -758,30 +955,81 @@ def main():
         print("Cache age: unknown")
 
     # Load cached data
-    toyota_data, ayvens_data, leasys_data = load_cached_data()
+    data = load_cached_data()
 
-    # Check if we have all data
-    missing = []
-    if toyota_data is None:
-        missing.append("Toyota")
-    if ayvens_data is None:
-        missing.append("Ayvens")
-    if leasys_data is None:
-        missing.append("Leasys")
+    # Check Toyota data
+    toyota_data = data['toyota']
+    ayvens_toyota_data = data['ayvens_toyota']
+    leasys_toyota_data = data['leasys_toyota']
 
-    if missing:
-        print(f"\nError: Missing cached data for: {', '.join(missing)}")
+    # Check Suzuki data
+    suzuki_data = data['suzuki']  # May be None (suzuki.nl has no configurator)
+    ayvens_suzuki_data = data['ayvens_suzuki']
+    leasys_suzuki_data = data['leasys_suzuki']
+
+    # Show what's loaded
+    print("\nLoaded data:")
+    if toyota_data:
+        print(f"  Toyota.nl: {len(toyota_data)} editions")
+    if ayvens_toyota_data:
+        print(f"  Ayvens Toyota: {len(ayvens_toyota_data)} offers")
+    if leasys_toyota_data:
+        print(f"  Leasys Toyota: {len(leasys_toyota_data)} offers")
+    if suzuki_data:
+        print(f"  Suzuki.nl: {len(suzuki_data)} editions")
+    if ayvens_suzuki_data:
+        print(f"  Ayvens Suzuki: {len(ayvens_suzuki_data)} offers")
+    if leasys_suzuki_data:
+        print(f"  Leasys Suzuki: {len(leasys_suzuki_data)} offers")
+
+    # Check if we have minimum data for comparison
+    has_toyota_comparison = toyota_data and (ayvens_toyota_data or leasys_toyota_data)
+    has_suzuki_comparison = ayvens_suzuki_data and leasys_suzuki_data  # Suzuki compares Ayvens vs Leasys only
+
+    if not has_toyota_comparison and not has_suzuki_comparison:
+        print("\nError: Insufficient cached data for comparison.")
         print("Run 'python scrape.py all' first to collect price data.")
         sys.exit(1)
 
-    print(f"Loaded: {len(toyota_data)} Toyota editions, {len(ayvens_data)} Ayvens offers, {len(leasys_data)} Leasys offers\n")
+    all_comparisons = []
 
-    # Match and compare
-    matches = match_editions(toyota_data, ayvens_data, leasys_data or [])
-    comparisons = compare_prices(matches)
+    # Toyota comparisons (OEM vs Ayvens vs Leasys)
+    if has_toyota_comparison:
+        print("\nMatching Toyota editions...")
+        toyota_matches = match_editions(
+            toyota_data,
+            ayvens_toyota_data or [],
+            leasys_toyota_data or [],
+            brand='toyota'
+        )
+        toyota_comparisons = compare_prices(toyota_matches, brand='toyota')
+        all_comparisons.extend(toyota_comparisons)
+
+    # Suzuki comparisons (Ayvens vs Leasys - no OEM configurator)
+    if has_suzuki_comparison:
+        print("Matching Suzuki editions...")
+        # For Suzuki, we directly compare Ayvens to Leasys without OEM reference
+        suzuki_matches = match_suzuki_editions(
+            ayvens_suzuki_data,
+            leasys_suzuki_data or []
+        )
+
+        # Check if there are any matches
+        matches_with_leasys = sum(1 for _, l in suzuki_matches if l)
+        if matches_with_leasys == 0:
+            # Get unique models from each provider
+            ayvens_models = set(a.get('model', '').lower() for a in ayvens_suzuki_data)
+            leasys_models = set(l.get('model', '').lower() for l in (leasys_suzuki_data or []))
+            print(f"\n  Note: No matching Suzuki models between providers:")
+            print(f"    Ayvens offers: {', '.join(sorted(m.title() for m in ayvens_models))}")
+            print(f"    Leasys offers: {', '.join(sorted(m.title() for m in leasys_models))}")
+            print("    (Different models - no price comparison possible)\n")
+
+        suzuki_comparisons = compare_suzuki_prices(suzuki_matches)
+        all_comparisons.extend(suzuki_comparisons)
 
     # Generate reports
-    report = generate_report(comparisons)
+    report = generate_report(all_comparisons)
     print(report)
 
     # Save report
@@ -791,7 +1039,7 @@ def main():
     logger.info(f"Saved report to {report_file}")
 
     # Save CSV
-    generate_csv(comparisons, "output/comparison_data.csv")
+    generate_csv(all_comparisons, "output/comparison_data.csv")
 
     print("\nDone. Reports saved to output/")
 
@@ -800,7 +1048,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Compare Toyota.nl, Ayvens, and Leasys private lease prices",
+        description="Compare Toyota and Suzuki private lease prices across OEM, Ayvens, and Leasys",
         epilog="Note: This script reads from cached data. Run 'python scrape.py' first to collect prices."
     )
     parser.add_argument(

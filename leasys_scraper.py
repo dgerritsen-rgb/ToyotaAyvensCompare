@@ -80,6 +80,16 @@ class LeasysScraper:
         {"slug": "Corolla%20Cross", "name": "Corolla Cross"},
     ]
 
+    # Known Suzuki models on Leasys
+    # (URL pattern: /nl/private/brands/Suzuki/{model})
+    KNOWN_SUZUKI_MODELS = [
+        {"slug": "Swift", "name": "Swift"},
+        {"slug": "Vitara", "name": "Vitara"},
+        {"slug": "S-Cross", "name": "S-Cross"},
+        {"slug": "Swace", "name": "Swace"},
+        {"slug": "Across", "name": "Across"},
+    ]
+
     # All known brands on Leasys
     KNOWN_BRANDS = [
         "Abarth", "Alfa Romeo", "Audi", "BMW", "BYD", "Citroën", "CUPRA",
@@ -230,6 +240,21 @@ class LeasysScraper:
                     'url': url,
                 })
             logger.info(f"Found {len(models)} Toyota models: {[m['model_name'] for m in models]}")
+            return models
+
+        # For Suzuki, use known models for accurate matching
+        if brand.lower() == "suzuki":
+            logger.info("Using known Suzuki models from Leasys...")
+            models = []
+            for model_info in self.KNOWN_SUZUKI_MODELS:
+                url = f"{self.BASE_URL}/nl/private/brands/Suzuki/{model_info['slug']}"
+                models.append({
+                    'model_slug': model_info['slug'],
+                    'model_name': model_info['name'],
+                    'brand': brand,
+                    'url': url,
+                })
+            logger.info(f"Found {len(models)} Suzuki models: {[m['model_name'] for m in models]}")
             return models
 
         # For other brands, discover models from the brand page

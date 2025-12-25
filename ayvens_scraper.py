@@ -43,7 +43,7 @@ MILEAGES = [5000, 10000, 15000, 20000, 25000, 30000]  # km/year
 
 @dataclass
 class AyvensOffer:
-    """An Ayvens Toyota lease offer."""
+    """An Ayvens lease offer."""
     model: str
     variant: str
     fuel_type: str
@@ -54,6 +54,7 @@ class AyvensOffer:
     price_matrix: Dict[str, float] = field(default_factory=dict)  # "duration_km" -> price
     is_new: bool = True  # True = build-to-order, False = used car
     edition_name: str = ""  # Clean edition name for matching (e.g., "Active", "GR-Sport")
+    brand: str = "Toyota"  # Brand name (Toyota, Suzuki, etc.)
 
     def get_price(self, duration: int, km: int) -> Optional[float]:
         """Get price for specific duration/km combination."""
@@ -124,9 +125,9 @@ class AyvensScraper:
     @staticmethod
     def _extract_edition_name(variant: str) -> str:
         """Extract clean edition name from variant text."""
-        # Common Toyota edition names
+        # Common Toyota and Suzuki edition names
         edition_patterns = [
-            r'\b(Active|Comfort|Dynamic|Executive|GR[- ]?Sport|Style|First|Edition|Premium|Lounge)\b',
+            r'\b(Active|Comfort|Dynamic|Executive|GR[- ]?Sport|Style|First|Edition|Premium|Lounge|Select|Select Pro|AllGrip)\b',
         ]
 
         for pattern in edition_patterns:
@@ -375,28 +376,47 @@ class AyvensScraper:
 
     # Hardcoded BTO (Build-to-Order) Toyota variant pages on Ayvens
     # These are the only new/configurable Toyota models available
-    BTO_VARIANT_URLS = [
+    BTO_TOYOTA_VARIANT_URLS = [
         "https://www.ayvens.com/nl-nl/private-lease-showroom/model/toyota/yaris-cross/suv/",
         "https://www.ayvens.com/nl-nl/private-lease-showroom/model/toyota/corolla-touring-sports/stationwagon/",
     ]
 
-    def _discover_variant_pages(self) -> List[str]:
-        """Return the known BTO Toyota variant pages."""
-        logger.info("Using known BTO Toyota variant pages...")
-        logger.info(f"BTO models: Yaris Cross SUV, Corolla Touring Sports")
-        return self.BTO_VARIANT_URLS
+    # Hardcoded BTO Suzuki variant pages on Ayvens
+    BTO_SUZUKI_VARIANT_URLS = [
+        "https://www.ayvens.com/nl-nl/private-lease-showroom/model/suzuki/swift/hatchback/",
+        "https://www.ayvens.com/nl-nl/private-lease-showroom/model/suzuki/vitara/suv/",
+        "https://www.ayvens.com/nl-nl/private-lease-showroom/model/suzuki/s-cross/suv/",
+        "https://www.ayvens.com/nl-nl/private-lease-showroom/model/suzuki/swace/stationwagon/",
+        "https://www.ayvens.com/nl-nl/private-lease-showroom/model/suzuki/across/suv/",
+    ]
 
-    def _discover_toyota_vehicles(self) -> List[Dict[str, Any]]:
-        """Discover all Toyota vehicles by navigating through variant pages."""
-        logger.info("Discovering Toyota vehicles from showroom...")
+    def _discover_variant_pages(self, brand: str = "toyota") -> List[str]:
+        """Return the known BTO variant pages for a brand."""
+        brand_lower = brand.lower()
+        if brand_lower == "toyota":
+            logger.info("Using known BTO Toyota variant pages...")
+            logger.info(f"BTO models: Yaris Cross SUV, Corolla Touring Sports")
+            return self.BTO_TOYOTA_VARIANT_URLS
+        elif brand_lower == "suzuki":
+            logger.info("Using known BTO Suzuki variant pages...")
+            logger.info(f"BTO models: Swift, Vitara, S-Cross, Swace, Across")
+            return self.BTO_SUZUKI_VARIANT_URLS
+        else:
+            logger.warning(f"Unknown brand: {brand}")
+            return []
+
+    def _discover_vehicles(self, brand: str = "toyota") -> List[Dict[str, Any]]:
+        """Discover all vehicles for a brand by navigating through variant pages."""
+        brand_lower = brand.lower()
+        logger.info(f"Discovering {brand} vehicles from showroom...")
         vehicles = []
 
         try:
-            # Step 1: Get variant page URLs from the Toyota showroom
-            variant_urls = self._discover_variant_pages()
+            # Step 1: Get variant page URLs for the brand
+            variant_urls = self._discover_variant_pages(brand)
 
             if not variant_urls:
-                logger.warning("No variant pages found")
+                logger.warning(f"No variant pages found for {brand}")
                 return []
 
             # Step 2: Visit each variant page to find individual vehicle URLs
@@ -418,8 +438,9 @@ class AyvensScraper:
                     href = link.get('href', '')
 
                     # Look for vehicle detail page links
-                    # Pattern: /private-lease-showroom/onze-autos/{id}/toyota-{model}
-                    match = re.search(r'/private-lease-showroom/onze-autos/(\d+)/toyota-([^/]+)', href)
+                    # Pattern: /private-lease-showroom/onze-autos/{id}/{brand}-{model}
+                    pattern = rf'/private-lease-showroom/onze-autos/(\d+)/{brand_lower}-([^/]+)'
+                    match = re.search(pattern, href)
                     if match:
                         vehicle_id = match.group(1)
                         model_slug = match.group(2)
@@ -446,11 +467,12 @@ class AyvensScraper:
                             fuel_type = "Electric"
                         elif 'hybrid' in context:
                             fuel_type = "Hybrid"
+                        elif 'benzine' in context or 'petrol' in context:
+                            fuel_type = "Petrol"
 
                         # Extract variant from link text
                         variant = ""
                         if link_text:
-                            # Try to extract variant info (e.g., "1.5 Hybrid Active Automaat")
                             variant_match = re.search(r'([\d.]+\s*(?:Hybrid|Electric)?.*?)(?:\d+d)?$', link_text, re.IGNORECASE)
                             if variant_match:
                                 variant = variant_match.group(1).strip()
@@ -462,6 +484,7 @@ class AyvensScraper:
                             'variant': variant,
                             'url': full_url,
                             'fuel_type': fuel_type,
+                            'brand': brand.title(),
                         })
 
             # Deduplicate by vehicle_id
@@ -472,12 +495,16 @@ class AyvensScraper:
                     seen_ids.add(v['vehicle_id'])
                     unique_vehicles.append(v)
 
-            logger.info(f"Discovered {len(unique_vehicles)} unique Toyota vehicles")
+            logger.info(f"Discovered {len(unique_vehicles)} unique {brand} vehicles")
             return unique_vehicles
 
         except Exception as e:
-            logger.error(f"Error discovering vehicles: {e}")
+            logger.error(f"Error discovering {brand} vehicles: {e}")
             return []
+
+    def _discover_toyota_vehicles(self) -> List[Dict[str, Any]]:
+        """Discover all Toyota vehicles (wrapper for backwards compatibility)."""
+        return self._discover_vehicles("toyota")
 
     def _has_configurable_sliders(self) -> bool:
         """Check if the current page has configurable duration/mileage sliders."""
@@ -778,23 +805,30 @@ class AyvensScraper:
 
         return price_matrix
 
-    def scrape_all(self) -> List[AyvensOffer]:
-        """Scrape all Toyota offers with price matrices."""
-        logger.info("Starting Ayvens Toyota private lease scrape")
+    def scrape_brand(self, brand: str = "Toyota") -> List[AyvensOffer]:
+        """Scrape all offers for a specific brand with price matrices.
+
+        Args:
+            brand: Brand name (e.g., "Toyota", "Suzuki")
+
+        Returns:
+            List of AyvensOffer objects
+        """
+        logger.info(f"Starting Ayvens {brand} private lease scrape")
 
         try:
-            # Discover vehicles
-            vehicles = self._discover_toyota_vehicles()
+            # Discover vehicles for this brand
+            vehicles = self._discover_vehicles(brand)
 
             if not vehicles:
-                logger.warning("No Toyota vehicles found")
+                logger.warning(f"No {brand} vehicles found")
                 return []
 
             offers = []
 
-            for vehicle in tqdm(vehicles, desc="Ayvens | Total", unit="vehicle",
+            for vehicle in tqdm(vehicles, desc=f"Ayvens | {brand} | Total", unit="vehicle",
                                bar_format='{desc} | {n_fmt}/{total_fmt} vehicles | {bar} | Elapsed: {elapsed} | ETA: {remaining}'):
-                logger.info(f"Processing: Toyota {vehicle['model']} ({vehicle.get('variant', '')[:50]}...)")
+                logger.info(f"Processing: {brand} {vehicle['model']} ({vehicle.get('variant', '')[:50]}...)")
 
                 # Scrape full price matrix by iterating through all slider combinations
                 price_matrix = self._scrape_vehicle_prices(vehicle)
@@ -814,16 +848,21 @@ class AyvensScraper:
                     offer_url=vehicle['url'],
                     price_matrix=price_matrix,
                     is_new=is_new,
-                    edition_name=edition_name
+                    edition_name=edition_name,
+                    brand=brand.title()
                 )
 
                 offers.append(offer)
 
-            logger.info(f"Completed scraping {len(offers)} unique Toyota offers")
+            logger.info(f"Completed scraping {len(offers)} unique {brand} offers")
             return offers
 
         finally:
             self.close()
+
+    def scrape_all(self) -> List[AyvensOffer]:
+        """Scrape all Toyota offers with price matrices (backwards compatible)."""
+        return self.scrape_brand("Toyota")
 
     def get_overview_metadata(self) -> Dict[str, Any]:
         """Get lightweight metadata from showroom for change detection.
