@@ -15,6 +15,7 @@ import time
 import os
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field, asdict
+from urllib.parse import unquote
 
 from tqdm import tqdm
 from selenium import webdriver
@@ -43,7 +44,8 @@ MILEAGES = [5000, 10000, 15000, 20000]  # km/year (only 4 options)
 
 @dataclass
 class LeasysOffer:
-    """A Leasys Toyota lease offer."""
+    """A Leasys lease offer."""
+    brand: str
     model: str
     variant: str  # Edition/trim name (e.g., "Play", "Premium")
     fuel_type: str
@@ -64,17 +66,28 @@ class LeasysOffer:
 
 
 class LeasysScraper:
-    """Scraper for store.leasys.com private lease Toyota offerings."""
+    """Scraper for store.leasys.com private lease offerings."""
 
     BASE_URL = "https://store.leasys.com"
     TOYOTA_URL = "https://store.leasys.com/nl/private/toyota"
+    PRIVATE_URL = "https://store.leasys.com/nl/private"
 
     # Known Toyota models on Leasys that are also on Toyota.nl
     # (URL pattern: /nl/private/brands/Toyota/{model})
-    KNOWN_MODELS = [
+    KNOWN_TOYOTA_MODELS = [
         {"slug": "AYGO%20X", "name": "Aygo X"},
         {"slug": "Yaris", "name": "Yaris"},
         {"slug": "Corolla%20Cross", "name": "Corolla Cross"},
+    ]
+
+    # All known brands on Leasys
+    KNOWN_BRANDS = [
+        "Abarth", "Alfa Romeo", "Audi", "BMW", "BYD", "Citroën", "CUPRA",
+        "Dacia", "DS", "Fiat", "Ford", "Honda", "Hyundai", "Jeep", "Kia",
+        "Lancia", "Land Rover", "Leapmotor", "Lynk & Co", "Mazda",
+        "Mercedes-Benz", "Mini", "Mitsubishi", "Nissan", "Opel", "Peugeot",
+        "Polestar", "Renault", "SEAT", "Skoda", "smart", "Subaru", "Suzuki",
+        "Tesla", "Toyota", "Volkswagen", "Volvo", "XPENG"
     ]
 
     REQUEST_DELAY = 2.0  # seconds between requests
@@ -200,25 +213,83 @@ class LeasysScraper:
             logger.debug(f"Error getting price: {e}")
         return None
 
-    def _discover_models(self) -> List[Dict[str, Any]]:
-        """Return known Toyota models available on Leasys."""
-        logger.info("Using known Toyota models from Leasys...")
+    def _discover_models(self, brand: str = "Toyota") -> List[Dict[str, Any]]:
+        """Discover models available for a given brand on Leasys."""
+        logger.info(f"Discovering models for {brand} from Leasys...")
 
+        # For Toyota, use known models for accurate matching
+        if brand.lower() == "toyota":
+            logger.info("Using known Toyota models from Leasys...")
+            models = []
+            for model_info in self.KNOWN_TOYOTA_MODELS:
+                url = f"{self.BASE_URL}/nl/private/brands/Toyota/{model_info['slug']}"
+                models.append({
+                    'model_slug': model_info['slug'],
+                    'model_name': model_info['name'],
+                    'brand': brand,
+                    'url': url,
+                })
+            logger.info(f"Found {len(models)} Toyota models: {[m['model_name'] for m in models]}")
+            return models
+
+        # For other brands, discover models from the brand page
         models = []
-        for model_info in self.KNOWN_MODELS:
-            url = f"{self.BASE_URL}/nl/private/brands/Toyota/{model_info['slug']}"
-            models.append({
-                'model_slug': model_info['slug'],
-                'model_name': model_info['name'],
-                'url': url,
-            })
+        try:
+            # URL format: /nl/private/{brand-slug} (lowercase, dashes)
+            brand_slug = brand.lower().replace(' ', '-').replace('&', '-')
+            brand_url = f"{self.BASE_URL}/nl/private/{brand_slug}"
 
-        logger.info(f"Found {len(models)} Toyota models: {[m['model_name'] for m in models]}")
+            self._rate_limit()
+            self.driver.get(brand_url)
+            self._wait_for_page_load()
+            self._accept_cookies()
+
+            soup = BeautifulSoup(self.driver.page_source, 'lxml')
+
+            # Find model links - pattern: /nl/private/brands/{Brand}/{Model}
+            # e.g., /nl/private/brands/Fiat/Topolino or /nl/private/brands/Fiat/Grande%20Panda
+            links = soup.find_all('a', href=True)
+            seen_models = set()
+
+            for link in links:
+                href = link.get('href', '')
+                # Pattern: /nl/private/brands/{Brand}/{Model}
+                # Brand name in URL is case-sensitive and matches the original brand name
+                pattern = r'/nl/private/brands/([^/]+)/([^/]+)'
+                match = re.search(pattern, href)
+                if match:
+                    url_brand = match.group(1)
+                    model_slug = match.group(2)
+
+                    # URL decode model slug (e.g., Grande%20Panda -> Grande Panda)
+                    model_name = unquote(model_slug)
+
+                    # Skip duplicates
+                    if model_name.lower() in seen_models:
+                        continue
+                    seen_models.add(model_name.lower())
+
+                    # Build URL - use original format
+                    model_url = f"{self.BASE_URL}/nl/private/brands/{url_brand}/{model_slug}"
+
+                    models.append({
+                        'model_slug': model_slug,
+                        'model_name': model_name,
+                        'brand': url_brand,  # Use brand from URL to preserve case
+                        'url': model_url,
+                    })
+
+            logger.info(f"Found {len(models)} {brand} models: {[m['model_name'] for m in models]}")
+
+        except Exception as e:
+            logger.error(f"Error discovering models for {brand}: {e}")
+
         return models
 
     def _discover_editions(self, model: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Discover available editions/trims for a model."""
-        logger.info(f"Discovering editions for {model['model_name']}...")
+        brand = model.get('brand', 'Toyota')
+        logger.info(f"Discovering editions for {brand} {model['model_name']}...")
         editions = []
 
         try:
@@ -229,21 +300,38 @@ class LeasysScraper:
 
             soup = BeautifulSoup(self.driver.page_source, 'lxml')
 
-            # Find edition links - pattern: /nl/private/toyota/{model-slug}/{edition}/...
-            # Example: /nl/private/toyota/aygo-x/play/1-0-vvt-i-mt-m-p/pure-white/.../factory/2522?annualMileage=5000&term=72
+            # Find edition links
+            # Pattern 1 (lowercase brand): /nl/private/{brand-slug}/{model-slug}/{edition}/...
+            # Pattern 2 (brands path): /nl/private/brands/{Brand}/{Model}/{edition}/...
+            # Example: /nl/private/toyota/aygo-x/play/1-0-vvt-i-mt-m-p/pure-white/.../factory/2522
+            # Example: /nl/private/fiat/topolino/dolcevita/electric/full-led/bianco-gelato-tri/yes/factory/11034
             links = soup.find_all('a', href=True)
 
-            # Normalize model slug for URL matching (e.g., "AYGO X" -> "aygo-x")
-            model_slug_normalized = model['model_name'].lower().replace(' ', '-')
+            # Normalize brand and model slug for URL matching (e.g., "AYGO X" -> "aygo-x")
+            brand_slug = brand.lower().replace(' ', '-').replace('&', '-')
+            model_slug_normalized = model['model_name'].lower().replace(' ', '-').replace('%20', '-')
 
             for link in links:
                 href = link.get('href', '')
-                # Pattern: /nl/private/toyota/{model-slug}/{edition}/...
-                pattern = rf'/nl/private/toyota/{model_slug_normalized}/([a-z0-9-]+)/'
-                match = re.search(pattern, href, re.IGNORECASE)
+
+                # Try both URL patterns
+                edition_slug = None
+
+                # Pattern 1: /nl/private/{brand-slug}/{model-slug}/{edition}/...
+                pattern1 = rf'/nl/private/{re.escape(brand_slug)}/{re.escape(model_slug_normalized)}/([a-z0-9-]+)/'
+                match = re.search(pattern1, href, re.IGNORECASE)
                 if match:
                     edition_slug = match.group(1).lower()
 
+                # Pattern 2: /nl/private/brands/{Brand}/{Model}/{edition}/...
+                if not edition_slug:
+                    model_slug_url = re.escape(model.get('model_slug', model['model_name']))
+                    pattern2 = rf'/nl/private/brands/[^/]+/{model_slug_url}/([a-z0-9-]+)/'
+                    match = re.search(pattern2, href, re.IGNORECASE)
+                    if match:
+                        edition_slug = match.group(1).lower()
+
+                if edition_slug:
                     # Skip if it's not a new car (factory)
                     if '/factory/' not in href:
                         continue
@@ -258,6 +346,7 @@ class LeasysScraper:
                         'url': full_url,
                         'model_name': model['model_name'],
                         'model_slug': model_slug_normalized,
+                        'brand': brand,
                     })
 
             # Deduplicate by edition_slug (keep first occurrence)
@@ -385,11 +474,17 @@ class LeasysScraper:
 
         combos = [(d, m) for d in DURATIONS for m in MILEAGES]
 
+        # Build descriptive progress bar: Leasys | Brand | Model | Edition
+        brand = edition.get('brand', 'Unknown')
+        model = edition.get('model_name', 'Unknown')
+        edition_name = edition.get('edition_name', 'Unknown')
+        desc = f"Leasys | {brand} | {model} | {edition_name}"
+
         try:
-            with tqdm(combos, desc=f"      {edition['edition_name']}", unit="price", leave=False,
-                      bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+            with tqdm(combos, unit="price", leave=False,
+                      bar_format='{desc} {n_fmt}/{total_fmt} {bar}') as pbar:
                 for duration, mileage in pbar:
-                    pbar.set_postfix_str(f"{duration}mo/{mileage}km")
+                    pbar.set_description(f"{desc} | {duration}mo/{mileage:,}km", refresh=True)
 
                     # Build URL with specific duration and mileage
                     url = f"{base_url}?annualMileage={mileage}&term={duration}"
@@ -411,61 +506,134 @@ class LeasysScraper:
 
         return price_matrix
 
-    def scrape_all(self) -> List[LeasysOffer]:
-        """Scrape all Toyota offers with price matrices."""
-        logger.info("Starting Leasys Toyota private lease scrape")
+    def scrape_brand(self, brand: str) -> List[LeasysOffer]:
+        """Scrape all offers for a specific brand with price matrices.
+
+        Args:
+            brand: Brand name (e.g., "Toyota", "BMW", "Volkswagen")
+
+        Returns:
+            List of LeasysOffer objects for the brand
+        """
+        logger.info(f"Starting Leasys {brand} private lease scrape")
+
+        # Discover models for this brand
+        models = self._discover_models(brand)
+
+        if not models:
+            logger.warning(f"No {brand} models found")
+            return []
+
+        offers = []
+
+        for model in tqdm(models, desc=f"Leasys | {brand} | Models", unit="model",
+                         bar_format='{desc} | {bar} {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'):
+            logger.info(f"Processing model: {brand} {model['model_name']}")
+
+            # Discover editions for this model
+            editions = self._discover_editions(model)
+
+            if not editions:
+                logger.info(f"  No editions found for {model['model_name']}")
+                continue
+
+            for edition in tqdm(editions, desc=f"Leasys | {brand} | {model['model_name']} | Editions", unit="ed", leave=False,
+                               bar_format='{desc} | {bar} {n_fmt}/{total_fmt}'):
+                logger.info(f"  Processing edition: {edition['edition_name']}")
+
+                # Scrape price matrix
+                price_matrix = self._scrape_edition_prices(edition)
+                logger.info(f"    Captured {len(price_matrix)} price points")
+
+                # Determine fuel type based on common patterns
+                fuel_type = self._guess_fuel_type(brand, model['model_name'], edition['edition_name'])
+
+                offer = LeasysOffer(
+                    brand=brand,
+                    model=model['model_name'],
+                    variant=edition['edition_name'],
+                    fuel_type=fuel_type,
+                    transmission="Automatic",
+                    offer_url=edition['url'],
+                    price_matrix=price_matrix,
+                    edition_name=edition['edition_name'],
+                )
+
+                offers.append(offer)
+
+        logger.info(f"Completed scraping {len(offers)} Leasys {brand} offers")
+        return offers
+
+    def _guess_fuel_type(self, brand: str, model: str, edition: str) -> str:
+        """Guess fuel type based on brand/model/edition names."""
+        combined = f"{brand} {model} {edition}".lower()
+
+        # Electric indicators
+        if any(x in combined for x in ['electric', 'ev', 'bev', 'e-', ' e ', 'model 3', 'model y',
+                                        'model s', 'model x', 'id.', 'i3', 'i4', 'ix', 'eq',
+                                        'polestar', 'bz4x', 'ioniq', 'kona electric', 'zoe',
+                                        'leaf', 'enyaq', 'born', 'e-208', 'e-308', 'e-c4',
+                                        'mach-e', 'mustang mach', 'leapmotor', 'xpeng', 'byd']):
+            return "Electric"
+
+        # Hybrid indicators
+        if any(x in combined for x in ['hybrid', 'phev', 'plug-in', 'hev']):
+            return "Hybrid"
+
+        # Diesel indicators
+        if any(x in combined for x in ['diesel', 'tdi', 'cdi', 'hdi', 'dci', 'bluehdi', 'jtd']):
+            return "Diesel"
+
+        # Default to petrol
+        return "Petrol"
+
+    def scrape_all(self, brand: str = "Toyota") -> List[LeasysOffer]:
+        """Scrape all offers for a brand with price matrices.
+
+        Args:
+            brand: Brand name (default: "Toyota")
+
+        Returns:
+            List of LeasysOffer objects
+        """
+        try:
+            return self.scrape_brand(brand)
+        finally:
+            self.close()
+
+    def scrape_all_brands(self, brands: Optional[List[str]] = None) -> Dict[str, List[LeasysOffer]]:
+        """Scrape all offers for multiple brands.
+
+        Args:
+            brands: List of brand names. If None, scrapes all known brands.
+
+        Returns:
+            Dict mapping brand name to list of LeasysOffer objects
+        """
+        if brands is None:
+            brands = self.KNOWN_BRANDS
+
+        logger.info(f"Starting Leasys multi-brand scrape for {len(brands)} brands")
+
+        all_offers = {}
 
         try:
-            # Discover models
-            models = self._discover_models()
-
-            if not models:
-                logger.warning("No Toyota models found")
-                return []
-
-            offers = []
-
-            for model in tqdm(models, desc="Leasys Models", unit="model",
-                             bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'):
-                logger.info(f"Processing model: {model['model_name']}")
-
-                # Discover editions for this model
-                editions = self._discover_editions(model)
-
-                if not editions:
-                    logger.info(f"  No editions found for {model['model_name']}")
+            for brand in tqdm(brands, desc="Leasys | All Brands", unit="brand",
+                             bar_format='{desc} | {bar} {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'):
+                try:
+                    offers = self.scrape_brand(brand)
+                    if offers:
+                        all_offers[brand] = offers
+                        logger.info(f"Scraped {len(offers)} offers for {brand}")
+                    else:
+                        logger.info(f"No offers found for {brand}")
+                except Exception as e:
+                    logger.error(f"Error scraping {brand}: {e}")
                     continue
 
-                for edition in tqdm(editions, desc=f"  {model['model_name']} editions", unit="ed", leave=False,
-                                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'):
-                    logger.info(f"  Processing edition: {edition['edition_name']}")
-
-                    # Scrape price matrix
-                    price_matrix = self._scrape_edition_prices(edition)
-                    logger.info(f"    Captured {len(price_matrix)} price points")
-
-                    # Determine fuel type (most Toyotas are hybrid)
-                    fuel_type = "Hybrid"
-                    model_lower = model['model_name'].lower()
-                    if 'proace' in model_lower:
-                        fuel_type = "Diesel"
-                    elif 'bz4x' in model_lower or 'prius' in model_lower:
-                        fuel_type = "Electric" if 'bz4x' in model_lower else "Hybrid"
-
-                    offer = LeasysOffer(
-                        model=model['model_name'],
-                        variant=edition['edition_name'],
-                        fuel_type=fuel_type,
-                        transmission="Automatic",
-                        offer_url=edition['url'],
-                        price_matrix=price_matrix,
-                        edition_name=edition['edition_name'],
-                    )
-
-                    offers.append(offer)
-
-            logger.info(f"Completed scraping {len(offers)} Leasys Toyota offers")
-            return offers
+            total_offers = sum(len(v) for v in all_offers.values())
+            logger.info(f"Completed multi-brand scrape: {total_offers} offers across {len(all_offers)} brands")
+            return all_offers
 
         finally:
             self.close()
@@ -522,7 +690,7 @@ class LeasysScraper:
         try:
             # Find matching model
             target_model = None
-            for model_info in self.KNOWN_MODELS:
+            for model_info in self.KNOWN_TOYOTA_MODELS:
                 if model_info['name'].lower() == model_name.lower():
                     target_model = {
                         'model_slug': model_info['slug'],
@@ -533,7 +701,7 @@ class LeasysScraper:
 
             if target_model is None:
                 logger.error(f"Unknown model: {model_name}")
-                logger.info(f"Available models: {[m['name'] for m in self.KNOWN_MODELS]}")
+                logger.info(f"Available models: {[m['name'] for m in self.KNOWN_TOYOTA_MODELS]}")
                 return []
 
             # Discover and scrape editions
@@ -554,6 +722,7 @@ class LeasysScraper:
                     fuel_type = "Electric"
 
                 offer = LeasysOffer(
+                    brand="Toyota",
                     model=target_model['model_name'],
                     variant=edition['edition_name'],
                     fuel_type=fuel_type,
@@ -571,7 +740,7 @@ class LeasysScraper:
             self.close()
 
 
-def save_offers(offers: List[LeasysOffer], output_file: str = "output/leasys_toyota_prices.json"):
+def save_offers(offers: List[LeasysOffer], output_file: str = "output/leasys_prices.json"):
     """Save offers to JSON file."""
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     output = [asdict(o) for o in offers]
@@ -579,24 +748,83 @@ def save_offers(offers: List[LeasysOffer], output_file: str = "output/leasys_toy
         json.dump(output, f, indent=2)
 
 
+def save_all_brand_offers(all_offers: Dict[str, List[LeasysOffer]], output_dir: str = "output"):
+    """Save offers from all brands to separate JSON files."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    total = 0
+    for brand, offers in all_offers.items():
+        if offers:
+            brand_slug = brand.lower().replace(' ', '_').replace('-', '_')
+            output_file = os.path.join(output_dir, f"leasys_{brand_slug}_prices.json")
+            save_offers(offers, output_file)
+            total += len(offers)
+            print(f"  Saved {len(offers)} {brand} offers to {output_file}")
+
+    # Also save combined file
+    all_combined = []
+    for offers in all_offers.values():
+        all_combined.extend(offers)
+    combined_file = os.path.join(output_dir, "leasys_all_brands_prices.json")
+    save_offers(all_combined, combined_file)
+    print(f"\n  Saved combined {total} offers to {combined_file}")
+
+
 def main():
     """Main entry point."""
-    output_file = "output/leasys_toyota_prices.json"
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Scrape Leasys private lease offers")
+    parser.add_argument('--brand', '-b', type=str, default=None,
+                        help="Specific brand to scrape (e.g., Toyota, BMW, Volkswagen)")
+    parser.add_argument('--all-brands', '-a', action='store_true',
+                        help="Scrape all available brands")
+    parser.add_argument('--list-brands', '-l', action='store_true',
+                        help="List all known brands")
+    args = parser.parse_args()
 
     scraper = LeasysScraper(headless=True)
 
+    if args.list_brands:
+        print("Known brands on Leasys:")
+        for brand in sorted(scraper.KNOWN_BRANDS):
+            print(f"  - {brand}")
+        return
+
+    if args.all_brands:
+        print("Scraping all brands from Leasys...")
+        all_offers = scraper.scrape_all_brands()
+
+        if all_offers:
+            print("\n" + "="*60)
+            print("Leasys All Brands Private Lease Offers")
+            print("="*60)
+
+            for brand, offers in all_offers.items():
+                print(f"\n{brand}: {len(offers)} offers")
+
+            save_all_brand_offers(all_offers)
+            total = sum(len(v) for v in all_offers.values())
+            print(f"\nTotal: {total} offers from {len(all_offers)} brands")
+        return
+
+    # Single brand mode
+    brand = args.brand or "Toyota"
+    brand_slug = brand.lower().replace(' ', '_').replace('-', '_')
+    output_file = f"output/leasys_{brand_slug}_prices.json"
+
     try:
-        offers = scraper.scrape_all()
+        offers = scraper.scrape_all(brand)
 
         if offers:
             save_offers(offers, output_file)
 
             print("\n" + "="*60)
-            print("Leasys Toyota Private Lease Offers")
+            print(f"Leasys {brand} Private Lease Offers")
             print("="*60)
 
             for offer in offers:
-                print(f"\nToyota {offer.model} - {offer.variant}")
+                print(f"\n{offer.brand} {offer.model} - {offer.variant}")
                 print(f"  URL: {offer.offer_url}")
                 print(f"  Fuel: {offer.fuel_type}")
                 print(f"  Prices found: {len(offer.price_matrix)}")
