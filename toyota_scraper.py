@@ -877,6 +877,100 @@ class ToyotaScraper:
 
         return overview_prices
 
+    def get_overview_metadata(self) -> Dict[str, Dict[str, Any]]:
+        """Get lightweight metadata from overview pages for change detection.
+
+        Returns:
+            Dict[model_name, {edition_count, editions_hash, cheapest_price, editions: [...]}]
+        """
+        from cache_manager import compute_hash
+
+        logger.info("Fetching overview metadata for change detection...")
+        metadata = {}
+
+        try:
+            for model_slug, model_name in self.KNOWN_MODELS:
+                # Visit model-specific page to get editions
+                model_url = f"{self.OVERVIEW_URL}/{model_slug}"
+                self._rate_limit()
+                self.driver.get(model_url)
+                self._wait_for_page_load()
+
+                if model_name == self.KNOWN_MODELS[0][1]:  # First model
+                    self._accept_cookies()
+
+                time.sleep(1)
+
+                soup = BeautifulSoup(self.driver.page_source, 'lxml')
+
+                # Find edition elements
+                edition_elements = soup.select('[data-testid="edition-name"]')
+                edition_names = []
+                prices = []
+
+                for elem in edition_elements:
+                    name = elem.get_text(strip=True)
+                    if name and not self._is_price_text(name):
+                        edition_names.append(name)
+
+                    # Look for price in parent card
+                    card = elem.find_parent()
+                    for _ in range(10):
+                        if card is None:
+                            break
+                        price_elem = card.select_one('[data-testid*="price"]')
+                        if price_elem:
+                            price_text = price_elem.get_text(strip=True)
+                            match = re.search(r'€\s*(\d+)', price_text)
+                            if match:
+                                prices.append(float(match.group(1)))
+                            break
+                        card = card.find_parent()
+
+                metadata[model_name] = {
+                    'edition_count': len(edition_names),
+                    'editions_hash': compute_hash(edition_names) if edition_names else '',
+                    'cheapest_price': min(prices) if prices else None,
+                    'editions': edition_names,
+                }
+
+                logger.info(f"  {model_name}: {len(edition_names)} editions, cheapest €{min(prices) if prices else 'N/A'}")
+
+        except Exception as e:
+            logger.error(f"Error fetching overview metadata: {e}")
+
+        return metadata
+
+    def scrape_model(self, model_name: str) -> List[ToyotaEdition]:
+        """Scrape a single model only.
+
+        Args:
+            model_name: Name of model to scrape (e.g., "Yaris", "Aygo X")
+
+        Returns:
+            List of ToyotaEdition objects for that model
+        """
+        logger.info(f"Scraping single model: {model_name}")
+
+        # Find matching model
+        model_slug = None
+        for slug, name in self.KNOWN_MODELS:
+            if name.lower() == model_name.lower():
+                model_slug = slug
+                break
+
+        if model_slug is None:
+            logger.error(f"Unknown model: {model_name}")
+            logger.info(f"Available models: {[n for _, n in self.KNOWN_MODELS]}")
+            return []
+
+        try:
+            filter_url = f"{self.OVERVIEW_URL}#?model[]={model_slug}&durationMonths=72&yearlyKilometers=5000"
+            editions = self._scrape_model_page_prices(model_slug, model_name, filter_url)
+            return editions
+        finally:
+            self.close()
+
     def _try_direct_models(self) -> List[ToyotaEdition]:
         """Try accessing known model pages directly."""
         known_models = [

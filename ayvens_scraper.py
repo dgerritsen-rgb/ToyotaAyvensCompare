@@ -821,6 +821,100 @@ class AyvensScraper:
         finally:
             self.close()
 
+    def get_overview_metadata(self) -> Dict[str, Any]:
+        """Get lightweight metadata from showroom for change detection.
+
+        Returns:
+            Dict with vehicle_count, vehicle_ids_hash, cheapest_price, vehicles: [...]
+        """
+        from cache_manager import compute_hash
+
+        logger.info("Fetching Ayvens overview metadata for change detection...")
+
+        try:
+            # Use existing discovery method
+            vehicles = self._discover_toyota_vehicles()
+
+            vehicle_ids = [v.get('vehicle_id', '') for v in vehicles if v.get('vehicle_id')]
+            prices = []
+
+            # Extract prices from vehicle variants if available
+            for v in vehicles:
+                variant = v.get('variant', '')
+                # Try to extract price from variant text (e.g., "€ 449 vanaf")
+                match = re.search(r'€\s*(\d+)', variant)
+                if match:
+                    prices.append(float(match.group(1)))
+
+            metadata = {
+                'vehicle_count': len(vehicles),
+                'vehicle_ids_hash': compute_hash(vehicle_ids) if vehicle_ids else '',
+                'cheapest_price': min(prices) if prices else None,
+                'vehicles': [{'id': v.get('vehicle_id'), 'model': v.get('model')} for v in vehicles],
+            }
+
+            logger.info(f"  Found {len(vehicles)} vehicles, cheapest €{metadata['cheapest_price'] or 'N/A'}")
+
+            return metadata
+
+        except Exception as e:
+            logger.error(f"Error fetching Ayvens overview metadata: {e}")
+            return {
+                'vehicle_count': 0,
+                'vehicle_ids_hash': '',
+                'cheapest_price': None,
+                'vehicles': [],
+            }
+        finally:
+            self.close()
+
+    def scrape_vehicle(self, vehicle_id: str) -> Optional[AyvensOffer]:
+        """Scrape a single vehicle by ID.
+
+        Args:
+            vehicle_id: The vehicle ID to scrape
+
+        Returns:
+            AyvensOffer if found, None otherwise
+        """
+        logger.info(f"Scraping single vehicle: {vehicle_id}")
+
+        try:
+            # Discover vehicles to find the one we want
+            vehicles = self._discover_toyota_vehicles()
+
+            target = None
+            for v in vehicles:
+                if v.get('vehicle_id') == vehicle_id:
+                    target = v
+                    break
+
+            if target is None:
+                logger.error(f"Vehicle {vehicle_id} not found in showroom")
+                return None
+
+            # Scrape this vehicle
+            price_matrix = self._scrape_vehicle_prices(target)
+
+            if price_matrix:
+                offer = AyvensOffer(
+                    model=target.get('model', 'Unknown'),
+                    variant=target.get('variant', ''),
+                    fuel_type=target.get('fuel_type', 'Hybrid'),
+                    transmission="Automatic",
+                    vehicle_id=vehicle_id,
+                    offer_url=target.get('url', ''),
+                    price_matrix=price_matrix,
+                    is_new=True,
+                    edition_name=self._extract_edition_name(target.get('variant', '')),
+                )
+                return offer
+
+            return None
+
+        finally:
+            self.close()
+
 
 def load_progress(output_file: str = "output/ayvens_toyota_prices.json") -> Dict[str, dict]:
     """Load existing progress from JSON file."""

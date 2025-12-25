@@ -470,6 +470,106 @@ class LeasysScraper:
         finally:
             self.close()
 
+    def get_overview_metadata(self) -> Dict[str, Dict[str, Any]]:
+        """Get lightweight metadata from model pages for change detection.
+
+        Returns:
+            Dict[model_name, {edition_count, editions_hash, editions: [...]}]
+        """
+        from cache_manager import compute_hash
+
+        logger.info("Fetching Leasys overview metadata for change detection...")
+        metadata = {}
+
+        try:
+            models = self._discover_models()
+
+            for model in models:
+                model_name = model['model_name']
+
+                # Discover editions for this model
+                editions = self._discover_editions(model)
+
+                edition_slugs = [e.get('edition_slug', '') for e in editions]
+
+                metadata[model_name] = {
+                    'edition_count': len(editions),
+                    'editions_hash': compute_hash(edition_slugs) if edition_slugs else '',
+                    'editions': [e.get('edition_name') for e in editions],
+                }
+
+                logger.info(f"  {model_name}: {len(editions)} editions")
+
+            return metadata
+
+        except Exception as e:
+            logger.error(f"Error fetching Leasys overview metadata: {e}")
+            return {}
+        finally:
+            self.close()
+
+    def scrape_model(self, model_name: str) -> List[LeasysOffer]:
+        """Scrape a single model only.
+
+        Args:
+            model_name: Name of model to scrape (e.g., "Yaris", "Aygo X")
+
+        Returns:
+            List of LeasysOffer objects for that model
+        """
+        logger.info(f"Scraping single Leasys model: {model_name}")
+
+        try:
+            # Find matching model
+            target_model = None
+            for model_info in self.KNOWN_MODELS:
+                if model_info['name'].lower() == model_name.lower():
+                    target_model = {
+                        'model_slug': model_info['slug'],
+                        'model_name': model_info['name'],
+                        'url': f"{self.BASE_URL}/nl/private/brands/Toyota/{model_info['slug']}",
+                    }
+                    break
+
+            if target_model is None:
+                logger.error(f"Unknown model: {model_name}")
+                logger.info(f"Available models: {[m['name'] for m in self.KNOWN_MODELS]}")
+                return []
+
+            # Discover and scrape editions
+            editions = self._discover_editions(target_model)
+            offers = []
+
+            for edition in editions:
+                logger.info(f"  Processing edition: {edition['edition_name']}")
+
+                price_matrix = self._scrape_edition_prices(edition)
+
+                # Determine fuel type
+                fuel_type = "Hybrid"
+                model_lower = target_model['model_name'].lower()
+                if 'proace' in model_lower:
+                    fuel_type = "Diesel"
+                elif 'bz4x' in model_lower:
+                    fuel_type = "Electric"
+
+                offer = LeasysOffer(
+                    model=target_model['model_name'],
+                    variant=edition['edition_name'],
+                    fuel_type=fuel_type,
+                    transmission="Automatic",
+                    offer_url=edition['url'],
+                    price_matrix=price_matrix,
+                    edition_name=edition['edition_name'],
+                )
+
+                offers.append(offer)
+
+            return offers
+
+        finally:
+            self.close()
+
 
 def save_offers(offers: List[LeasysOffer], output_file: str = "output/leasys_toyota_prices.json"):
     """Save offers to JSON file."""
