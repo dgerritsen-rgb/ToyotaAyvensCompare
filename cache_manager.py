@@ -311,6 +311,113 @@ def format_cache_age(age: Optional[timedelta]) -> str:
         return f"{minutes}m ago"
 
 
+def clean_stale_cache_entries(
+    supplier: str,
+    current_models: List[str],
+    current_editions: Optional[Dict[str, List[str]]] = None
+) -> Tuple[int, List[str]]:
+    """
+    Remove stale entries from cache that are no longer visible on the website.
+
+    Args:
+        supplier: Supplier name ('toyota', 'ayvens', 'leasys')
+        current_models: List of model names currently visible on website.
+                        For Ayvens, this should be a list of vehicle_ids instead.
+        current_editions: Optional dict of model_name -> list of edition names
+
+    Returns:
+        Tuple of (count_removed, list_of_removed_items)
+    """
+    cached_data = load_cached_prices(supplier)
+    if not cached_data:
+        return 0, []
+
+    removed_items = []
+    cleaned_data = []
+
+    # Handle Ayvens specially - uses vehicle_id as identifier
+    if supplier == 'ayvens':
+        current_vehicle_ids = set(current_models)  # current_models is actually vehicle_ids
+
+        for item in cached_data:
+            vehicle_id = item.get('vehicle_id', '')
+            model = item.get('model', '')
+            edition = item.get('edition_name', '') or item.get('variant', '')
+
+            if vehicle_id not in current_vehicle_ids:
+                removed_items.append(f"{model} - {edition} (vehicle_id {vehicle_id} removed)")
+                continue
+
+            cleaned_data.append(item)
+
+        if removed_items:
+            save_cached_prices(supplier, cleaned_data)
+
+        return len(removed_items), removed_items
+
+    # For Toyota and Leasys - use model/edition matching
+    current_models_lower = {m.lower() for m in current_models}
+
+    for item in cached_data:
+        model = item.get('model', '')
+        edition = item.get('edition_name', '') or item.get('variant', '')
+
+        model_lower = model.lower()
+
+        # Check if model still exists
+        if model_lower not in current_models_lower:
+            removed_items.append(f"{model} - {edition} (model removed)")
+            continue
+
+        # Check if edition still exists (if edition data provided)
+        if current_editions:
+            model_editions = current_editions.get(model, [])
+            model_editions_lower = {e.lower() for e in model_editions}
+
+            if edition.lower() not in model_editions_lower:
+                removed_items.append(f"{model} - {edition} (edition removed)")
+                continue
+
+        # Keep this item
+        cleaned_data.append(item)
+
+    # Save cleaned data if anything was removed
+    if removed_items:
+        save_cached_prices(supplier, cleaned_data)
+
+        # Also clean metadata
+        metadata = load_metadata()
+        if metadata.get(supplier) and metadata[supplier].get('models'):
+            cached_models = list(metadata[supplier]['models'].keys())
+            for cached_model in cached_models:
+                if cached_model.lower() not in current_models_lower:
+                    del metadata[supplier]['models'][cached_model]
+            save_metadata(metadata)
+
+    return len(removed_items), removed_items
+
+
+def get_visible_models_and_editions(supplier: str) -> Tuple[List[str], Dict[str, List[str]]]:
+    """
+    Get currently visible models and editions from overview metadata.
+
+    Returns:
+        Tuple of (model_names_list, {model_name: [edition_names]})
+    """
+    metadata = load_metadata()
+    supplier_meta = metadata.get(supplier, {})
+    models_meta = supplier_meta.get('models', {})
+
+    models = list(models_meta.keys())
+    editions = {}
+
+    for model, meta in models_meta.items():
+        # The editions list might be stored in the metadata
+        editions[model] = meta.get('editions', [])
+
+    return models, editions
+
+
 def print_cache_status():
     """Print current cache status."""
     metadata = load_metadata()

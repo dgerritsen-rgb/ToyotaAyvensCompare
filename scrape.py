@@ -28,7 +28,7 @@ from cache_manager import (
     needs_refresh, update_supplier_metadata, get_model_metadata,
     load_cached_prices, save_cached_prices, merge_cached_prices,
     format_cache_age, print_cache_status, CACHE_TTL_HOURS,
-    compute_hash
+    compute_hash, clean_stale_cache_entries
 )
 from toyota_scraper import ToyotaScraper, ToyotaEdition
 from ayvens_scraper import AyvensScraper, AyvensOffer
@@ -88,6 +88,17 @@ def check_changes(force: bool = False) -> Dict[str, Dict[str, str]]:
         if not changes['toyota']:
             print("  No changes detected")
 
+        # Clean stale cache entries for Toyota
+        current_models = list(current.keys())
+        current_editions = {model: meta.get('editions', []) for model, meta in current.items()}
+        removed_count, removed_items = clean_stale_cache_entries('toyota', current_models, current_editions)
+        if removed_count > 0:
+            print(f"  Cleaned {removed_count} stale entries from cache:")
+            for item in removed_items[:5]:  # Show first 5
+                print(f"    - {item}")
+            if removed_count > 5:
+                print(f"    ... and {removed_count - 5} more")
+
     except Exception as e:
         logger.error(f"Error checking Toyota: {e}")
         print(f"  Error: {e}")
@@ -120,6 +131,17 @@ def check_changes(force: bool = False) -> Dict[str, Dict[str, str]]:
         else:
             print(f"  No changes detected ({current_count} vehicles)")
 
+        # Clean stale Ayvens entries - use vehicle_ids as model identifiers
+        current_vehicle_ids = current.get('vehicle_ids', [])
+        if current_vehicle_ids:
+            removed_count, removed_items = clean_stale_cache_entries('ayvens', current_vehicle_ids)
+            if removed_count > 0:
+                print(f"  Cleaned {removed_count} stale entries from cache:")
+                for item in removed_items[:5]:
+                    print(f"    - {item}")
+                if removed_count > 5:
+                    print(f"    ... and {removed_count - 5} more")
+
     except Exception as e:
         logger.error(f"Error checking Ayvens: {e}")
         print(f"  Error: {e}")
@@ -141,6 +163,17 @@ def check_changes(force: bool = False) -> Dict[str, Dict[str, str]]:
 
         if not changes['leasys']:
             print("  No changes detected")
+
+        # Clean stale cache entries for Leasys
+        current_models = list(current.keys())
+        current_editions = {model: meta.get('editions', []) for model, meta in current.items()}
+        removed_count, removed_items = clean_stale_cache_entries('leasys', current_models, current_editions)
+        if removed_count > 0:
+            print(f"  Cleaned {removed_count} stale entries from cache:")
+            for item in removed_items[:5]:
+                print(f"    - {item}")
+            if removed_count > 5:
+                print(f"    ... and {removed_count - 5} more")
 
     except Exception as e:
         logger.error(f"Error checking Leasys: {e}")

@@ -524,26 +524,51 @@ class LeasysScraper:
             logger.warning(f"No {brand} models found")
             return []
 
-        offers = []
-
-        for model in tqdm(models, desc=f"Leasys | {brand} | Models", unit="model",
-                         bar_format='{desc} | {bar} {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'):
-            logger.info(f"Processing model: {brand} {model['model_name']}")
-
-            # Discover editions for this model
+        # Phase 1: Discover all editions to get total count
+        print(f"\nDiscovering editions for {brand}...")
+        all_editions = []
+        for model in models:
             editions = self._discover_editions(model)
+            for edition in editions:
+                edition['model_info'] = model  # Store model reference
+                all_editions.append(edition)
 
-            if not editions:
-                logger.info(f"  No editions found for {model['model_name']}")
-                continue
+        total_editions = len(all_editions)
+        total_prices = total_editions * len(DURATIONS) * len(MILEAGES)
+        print(f"Found {total_editions} editions ({total_prices} price points to scrape)\n")
 
-            for edition in tqdm(editions, desc=f"Leasys | {brand} | {model['model_name']} | Editions", unit="ed", leave=False,
-                               bar_format='{desc} | {bar} {n_fmt}/{total_fmt}'):
-                logger.info(f"  Processing edition: {edition['edition_name']}")
+        if total_editions == 0:
+            logger.warning(f"No editions found for {brand}")
+            return []
+
+        # Phase 2: Scrape with global progress tracking
+        offers = []
+        edition_times = []  # Track time per edition for ETA calculation
+
+        with tqdm(total=total_editions, desc=f"Leasys | {brand} | Total", unit="edition",
+                  bar_format='{desc} | {n_fmt}/{total_fmt} editions | {bar} | Elapsed: {elapsed} | ETA: {remaining}') as pbar:
+
+            for edition in all_editions:
+                model = edition['model_info']
+                edition_start = time.time()
+
+                # Update progress bar description with current edition
+                pbar.set_description(f"Leasys | {brand} | {model['model_name']} | {edition['edition_name']}")
+
+                logger.info(f"Processing: {brand} {model['model_name']} - {edition['edition_name']}")
 
                 # Scrape price matrix
                 price_matrix = self._scrape_edition_prices(edition)
-                logger.info(f"    Captured {len(price_matrix)} price points")
+
+                edition_elapsed = time.time() - edition_start
+                edition_times.append(edition_elapsed)
+
+                # Calculate average time per edition and update ETA
+                avg_time = sum(edition_times) / len(edition_times)
+                remaining_editions = total_editions - len(offers) - 1
+                eta_seconds = remaining_editions * avg_time
+
+                logger.info(f"  Captured {len(price_matrix)} prices in {edition_elapsed:.0f}s (avg: {avg_time:.0f}s, ETA: {eta_seconds/60:.1f}m)")
 
                 # Determine fuel type based on common patterns
                 fuel_type = self._guess_fuel_type(brand, model['model_name'], edition['edition_name'])
@@ -560,6 +585,7 @@ class LeasysScraper:
                 )
 
                 offers.append(offer)
+                pbar.update(1)
 
         logger.info(f"Completed scraping {len(offers)} Leasys {brand} offers")
         return offers

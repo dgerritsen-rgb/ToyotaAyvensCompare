@@ -850,6 +850,7 @@ class AyvensScraper:
                 'vehicle_count': len(vehicles),
                 'vehicle_ids_hash': compute_hash(vehicle_ids) if vehicle_ids else '',
                 'cheapest_price': min(prices) if prices else None,
+                'vehicle_ids': vehicle_ids,  # For stale cache cleanup
                 'vehicles': [{'id': v.get('vehicle_id'), 'model': v.get('model')} for v in vehicles],
             }
 
@@ -863,6 +864,7 @@ class AyvensScraper:
                 'vehicle_count': 0,
                 'vehicle_ids_hash': '',
                 'cheapest_price': None,
+                'vehicle_ids': [],
                 'vehicles': [],
             }
         finally:
