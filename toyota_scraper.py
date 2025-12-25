@@ -639,10 +639,11 @@ class ToyotaScraper:
         total_combos = len(DURATIONS) * len(MILEAGES)
         combos = [(d, k) for d in DURATIONS for k in MILEAGES]
 
-        with tqdm(combos, desc=f"  {model_name}", unit="combo", leave=True,
-                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
+        desc = f"Toyota | {model_name}"
+        with tqdm(combos, desc=desc, unit="price", leave=True,
+                  bar_format='{desc} {n_fmt}/{total_fmt} {bar} [{elapsed}<{remaining}]') as pbar:
             for duration, km in pbar:
-                pbar.set_postfix_str(f"{duration}mo/{km}km")
+                pbar.set_description(f"Toyota | {model_name} | {duration}mo/{km:,}km", refresh=True)
 
                 # Set the dropdowns
                 if not self._set_duration_km_dropdowns(duration, km):
@@ -710,13 +711,13 @@ class ToyotaScraper:
         total_combinations = len(DURATIONS) * len(MILEAGES)
         combos = [(d, k) for d in DURATIONS for k in MILEAGES]
 
-        edition_info = f"[{edition_num}/{total_editions}]" if total_editions > 0 else ""
-        desc = f"{edition_info} {edition.model}"
+        edition_info = f"[{edition_num}/{total_editions}] " if total_editions > 0 else ""
+        desc = f"Toyota | {edition.model} | {edition.edition_name}"
 
-        with tqdm(combos, desc=desc, unit="combo", leave=True,
-                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]') as pbar:
+        with tqdm(combos, desc=desc, unit="price", leave=True,
+                  bar_format='{desc} {n_fmt}/{total_fmt} {bar} [{elapsed}<{remaining}]') as pbar:
             for duration, km in pbar:
-                pbar.set_postfix_str(f"{duration}mo/{km}km")
+                pbar.set_description(f"Toyota | {edition.model} | {edition.edition_name} | {duration}mo/{km:,}km", refresh=True)
 
                 price = self._scrape_price_for_combination(
                     edition.edition_slug, duration, km
@@ -767,8 +768,8 @@ class ToyotaScraper:
             print("Scraping Toyota.nl Private Lease")
             print("="*60 + "\n")
 
-            for model_slug, model_name in tqdm(self.KNOWN_MODELS, desc="Toyota Models", unit="model",
-                                                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'):
+            for model_slug, model_name in tqdm(self.KNOWN_MODELS, desc="Toyota | Total", unit="model",
+                                                bar_format='{desc} | {n_fmt}/{total_fmt} models | {bar} | Elapsed: {elapsed} | ETA: {remaining}'):
                 # Check if we can use cached data for this model
                 if use_cache and cached_data:
                     cached_editions = [v for k, v in cached_data.items() if v.get('model') == model_name]

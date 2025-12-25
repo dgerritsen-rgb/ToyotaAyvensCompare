@@ -737,8 +737,12 @@ class AyvensScraper:
             time.sleep(0.5)
 
             combo_count = 0
-            with tqdm(total=total_combos, desc="    Price points", unit="point", leave=False,
-                      bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+            model_name = vehicle.get('model', 'Unknown')
+            edition_name = self._extract_edition_name(vehicle.get('variant', ''))
+            desc = f"Ayvens | {model_name} | {edition_name}"
+
+            with tqdm(total=total_combos, desc=desc, unit="price", leave=False,
+                      bar_format='{desc} {n_fmt}/{total_fmt} {bar}') as pbar:
                 for dur_pos in range(DURATION_POSITIONS):
                     # For each duration position, reset mileage to minimum
                     self._reset_slider_to_min('mileage')
@@ -754,7 +758,7 @@ class AyvensScraper:
                             key = f"{actual_duration}_{actual_mileage}"
                             if key not in price_matrix:
                                 price_matrix[key] = price
-                                pbar.set_postfix_str(f"{actual_duration}mo/{actual_mileage}km: €{price}")
+                                pbar.set_description(f"Ayvens | {model_name} | {edition_name} | {actual_duration}mo/{actual_mileage:,}km", refresh=True)
                                 logger.debug(f"  {actual_duration}mo/{actual_mileage}km = €{price}")
 
                         # Move mileage to next position (unless at last position)
@@ -788,8 +792,8 @@ class AyvensScraper:
 
             offers = []
 
-            for vehicle in tqdm(vehicles, desc="Ayvens Vehicles", unit="vehicle",
-                               bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'):
+            for vehicle in tqdm(vehicles, desc="Ayvens | Total", unit="vehicle",
+                               bar_format='{desc} | {n_fmt}/{total_fmt} vehicles | {bar} | Elapsed: {elapsed} | ETA: {remaining}'):
                 logger.info(f"Processing: Toyota {vehicle['model']} ({vehicle.get('variant', '')[:50]}...)")
 
                 # Scrape full price matrix by iterating through all slider combinations
