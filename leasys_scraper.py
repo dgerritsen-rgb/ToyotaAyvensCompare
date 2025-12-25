@@ -16,6 +16,7 @@ import os
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field, asdict
 
+from tqdm import tqdm
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -382,9 +383,14 @@ class LeasysScraper:
         if '?' in base_url:
             base_url = base_url.split('?')[0]
 
+        combos = [(d, m) for d in DURATIONS for m in MILEAGES]
+
         try:
-            for duration in DURATIONS:
-                for mileage in MILEAGES:
+            with tqdm(combos, desc=f"      {edition['edition_name']}", unit="price", leave=False,
+                      bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+                for duration, mileage in pbar:
+                    pbar.set_postfix_str(f"{duration}mo/{mileage}km")
+
                     # Build URL with specific duration and mileage
                     url = f"{base_url}?annualMileage={mileage}&term={duration}"
 
@@ -419,7 +425,8 @@ class LeasysScraper:
 
             offers = []
 
-            for model in models:
+            for model in tqdm(models, desc="Leasys Models", unit="model",
+                             bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'):
                 logger.info(f"Processing model: {model['model_name']}")
 
                 # Discover editions for this model
@@ -429,7 +436,8 @@ class LeasysScraper:
                     logger.info(f"  No editions found for {model['model_name']}")
                     continue
 
-                for edition in editions:
+                for edition in tqdm(editions, desc=f"  {model['model_name']} editions", unit="ed", leave=False,
+                                   bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'):
                     logger.info(f"  Processing edition: {edition['edition_name']}")
 
                     # Scrape price matrix

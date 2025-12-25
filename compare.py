@@ -9,10 +9,13 @@ Matches models and generates a detailed comparison report.
 import json
 import os
 import logging
+import time
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
+from tqdm import tqdm
 
 from toyota_scraper import ToyotaScraper, ToyotaEdition, DURATIONS, MILEAGES
 from ayvens_scraper import AyvensScraper, AyvensOffer
@@ -243,35 +246,137 @@ def load_cached_data() -> Tuple[Optional[List[dict]], Optional[List[dict]], Opti
     return toyota_data, ayvens_data, leasys_data
 
 
-def scrape_fresh_data(use_cache: bool = False) -> Tuple[List[ToyotaEdition], List[AyvensOffer], List[LeasysOffer]]:
+def _scrape_toyota(use_cache: bool = False) -> List[ToyotaEdition]:
+    """Scrape Toyota.nl data (for parallel execution)."""
+    print(f"\n>>> TOYOTA.NL SCRAPER STARTED <<<\n")
+    toyota_scraper = ToyotaScraper(headless=True)
+    editions = toyota_scraper.scrape_all(use_cache=use_cache)
+    print(f"\n>>> TOYOTA.NL COMPLETE: {len(editions)} editions <<<\n")
+    return editions
+
+
+def _scrape_ayvens() -> List[AyvensOffer]:
+    """Scrape Ayvens data (for parallel execution)."""
+    print(f"\n>>> AYVENS SCRAPER STARTED <<<\n")
+    ayvens_scraper = AyvensScraper(headless=True)
+    offers = ayvens_scraper.scrape_all()
+    print(f"\n>>> AYVENS COMPLETE: {len(offers)} offers <<<\n")
+    return offers
+
+
+def _scrape_leasys() -> List[LeasysOffer]:
+    """Scrape Leasys data (for parallel execution)."""
+    print(f"\n>>> LEASYS SCRAPER STARTED <<<\n")
+    leasys_scraper = LeasysScraper(headless=True)
+    offers = leasys_scraper.scrape_all()
+    print(f"\n>>> LEASYS COMPLETE: {len(offers)} offers <<<\n")
+    return offers
+
+
+def scrape_fresh_data(use_cache: bool = False, parallel: bool = False) -> Tuple[List[ToyotaEdition], List[AyvensOffer], List[LeasysOffer]]:
     """Scrape data from all sites.
 
     Args:
         use_cache: If True, use smart caching for Toyota (check overview prices first)
+        parallel: If True, scrape all suppliers in parallel (faster but uses more resources)
     """
     print("\n" + "="*70)
     print("TOYOTA PRIVATE LEASE PRICE COMPARISON - DATA COLLECTION")
+    if parallel:
+        print("MODE: PARALLEL (all suppliers simultaneously)")
+    else:
+        print("MODE: SEQUENTIAL")
     print("="*70)
 
-    # Scrape Toyota (with optional smart caching)
-    print("\n>>> PHASE 1: SCRAPING TOYOTA.NL <<<\n")
-    toyota_scraper = ToyotaScraper(headless=True)
-    toyota_editions = toyota_scraper.scrape_all(use_cache=use_cache)
-    print(f"\nToyota scraping complete: {len(toyota_editions)} editions\n")
+    start_time = time.time()
 
-    # Scrape Ayvens
-    print("\n>>> PHASE 2: SCRAPING AYVENS <<<\n")
-    ayvens_scraper = AyvensScraper(headless=True)
-    ayvens_offers = ayvens_scraper.scrape_all()
-    print(f"\nAyvens scraping complete: {len(ayvens_offers)} offers\n")
+    if parallel:
+        # Parallel scraping - all suppliers at once
+        toyota_editions = []
+        ayvens_offers = []
+        leasys_offers = []
 
-    # Scrape Leasys
-    print("\n>>> PHASE 3: SCRAPING LEASYS <<<\n")
-    leasys_scraper = LeasysScraper(headless=True)
-    leasys_offers = leasys_scraper.scrape_all()
-    print(f"\nLeasys scraping complete: {len(leasys_offers)} offers\n")
+        print("\nStarting parallel scraping of all 3 suppliers...")
+        print("Note: Progress output may be interleaved\n")
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            # Submit all tasks
+            futures = {
+                executor.submit(_scrape_toyota, use_cache): 'toyota',
+                executor.submit(_scrape_ayvens): 'ayvens',
+                executor.submit(_scrape_leasys): 'leasys',
+            }
+
+            # Collect results as they complete
+            completed = 0
+            with tqdm(total=3, desc="Suppliers", unit="supplier",
+                      bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+                for future in as_completed(futures):
+                    supplier = futures[future]
+                    try:
+                        result = future.result()
+                        if supplier == 'toyota':
+                            toyota_editions = result
+                            pbar.set_postfix_str(f"Toyota done: {len(result)} editions")
+                        elif supplier == 'ayvens':
+                            ayvens_offers = result
+                            pbar.set_postfix_str(f"Ayvens done: {len(result)} offers")
+                        else:
+                            leasys_offers = result
+                            pbar.set_postfix_str(f"Leasys done: {len(result)} offers")
+                        pbar.update(1)
+                    except Exception as e:
+                        logger.error(f"Error scraping {supplier}: {e}")
+                        pbar.update(1)
+
+    else:
+        # Sequential scraping - one at a time (original behavior)
+        phases = [
+            ("Toyota.nl", "Scraping Toyota.nl direct prices"),
+            ("Ayvens", "Scraping Ayvens private lease offers"),
+            ("Leasys", "Scraping Leasys private lease offers"),
+        ]
+
+        results = {}
+
+        # Overall progress bar for phases
+        with tqdm(phases, desc="Overall Progress", unit="phase",
+                  bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} phases [{elapsed}<{remaining}]') as phase_pbar:
+
+            # Phase 1: Toyota
+            phase_pbar.set_postfix_str("Toyota.nl")
+            print(f"\n>>> PHASE 1/3: SCRAPING TOYOTA.NL <<<\n")
+            toyota_scraper = ToyotaScraper(headless=True)
+            toyota_editions = toyota_scraper.scrape_all(use_cache=use_cache)
+            results['toyota'] = toyota_editions
+            print(f"\nToyota scraping complete: {len(toyota_editions)} editions\n")
+            phase_pbar.update(1)
+
+            # Phase 2: Ayvens
+            phase_pbar.set_postfix_str("Ayvens")
+            print(f"\n>>> PHASE 2/3: SCRAPING AYVENS <<<\n")
+            ayvens_scraper = AyvensScraper(headless=True)
+            ayvens_offers = ayvens_scraper.scrape_all()
+            results['ayvens'] = ayvens_offers
+            print(f"\nAyvens scraping complete: {len(ayvens_offers)} offers\n")
+            phase_pbar.update(1)
+
+            # Phase 3: Leasys
+            phase_pbar.set_postfix_str("Leasys")
+            print(f"\n>>> PHASE 3/3: SCRAPING LEASYS <<<\n")
+            leasys_scraper = LeasysScraper(headless=True)
+            leasys_offers = leasys_scraper.scrape_all()
+            results['leasys'] = leasys_offers
+            print(f"\nLeasys scraping complete: {len(leasys_offers)} offers\n")
+            phase_pbar.update(1)
+
+    elapsed = time.time() - start_time
+    elapsed_min = int(elapsed // 60)
+    elapsed_sec = int(elapsed % 60)
 
     print("\n>>> DATA COLLECTION COMPLETE <<<")
+    print(f"Total time: {elapsed_min}m {elapsed_sec}s")
+    print(f"Results: {len(toyota_editions)} Toyota editions, {len(ayvens_offers)} Ayvens offers, {len(leasys_offers)} Leasys offers")
     print("="*70 + "\n")
 
     return toyota_editions, ayvens_offers, leasys_offers
@@ -768,8 +873,14 @@ def generate_csv(comparisons: List[PriceComparison], filename: str):
     logger.info(f"Saved comparison to {filename}")
 
 
-def main(use_cache: bool = True, scrape_fresh: bool = False):
-    """Main comparison function."""
+def main(use_cache: bool = True, scrape_fresh: bool = False, parallel: bool = False):
+    """Main comparison function.
+
+    Args:
+        use_cache: Use cached data if available
+        scrape_fresh: Force fresh scrape
+        parallel: Run scrapers in parallel (faster but uses more resources)
+    """
     os.makedirs("output", exist_ok=True)
 
     toyota_data = None
@@ -784,7 +895,9 @@ def main(use_cache: bool = True, scrape_fresh: bool = False):
         logger.info("Scraping fresh data...")
         # Use smart caching if we have cached data and just need a refresh
         use_smart_cache = use_cache and toyota_data is not None
-        toyota_editions, ayvens_offers, leasys_offers = scrape_fresh_data(use_cache=use_smart_cache)
+        toyota_editions, ayvens_offers, leasys_offers = scrape_fresh_data(
+            use_cache=use_smart_cache, parallel=parallel
+        )
 
         # Convert to dicts for saving
         from dataclasses import asdict
@@ -821,10 +934,12 @@ def main(use_cache: bool = True, scrape_fresh: bool = False):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Compare Toyota.nl and Ayvens private lease prices")
+    parser = argparse.ArgumentParser(description="Compare Toyota.nl, Ayvens, and Leasys private lease prices")
     parser.add_argument("--fresh", action="store_true", help="Scrape fresh data (ignore cache)")
     parser.add_argument("--no-cache", action="store_true", help="Don't use cached data")
+    parser.add_argument("--parallel", action="store_true",
+                       help="Run all scrapers in parallel (faster but uses more resources)")
 
     args = parser.parse_args()
 
-    main(use_cache=not args.no_cache, scrape_fresh=args.fresh)
+    main(use_cache=not args.no_cache, scrape_fresh=args.fresh, parallel=args.parallel)

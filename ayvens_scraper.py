@@ -16,6 +16,7 @@ import os
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field, asdict
 
+from tqdm import tqdm
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -729,37 +730,44 @@ class AyvensScraper:
             # Mileage slider has 7 positions: 5000, 7500, 10000, 15000, 20000, 25000, 30000
             DURATION_POSITIONS = 6
             MILEAGE_POSITIONS = 7
+            total_combos = DURATION_POSITIONS * MILEAGE_POSITIONS
 
             # Reset duration to minimum (12 months)
             self._reset_slider_to_min('duration')
             time.sleep(0.5)
 
-            for dur_pos in range(DURATION_POSITIONS):
-                # For each duration position, reset mileage to minimum
-                self._reset_slider_to_min('mileage')
-                time.sleep(0.5)
+            combo_count = 0
+            with tqdm(total=total_combos, desc="    Price points", unit="point", leave=False,
+                      bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]') as pbar:
+                for dur_pos in range(DURATION_POSITIONS):
+                    # For each duration position, reset mileage to minimum
+                    self._reset_slider_to_min('mileage')
+                    time.sleep(0.5)
 
-                for mil_pos in range(MILEAGE_POSITIONS):
-                    # Get current slider values and price
-                    time.sleep(0.5)  # Wait for price to update
-                    actual_duration, actual_mileage = self._get_slider_values()
-                    price = self._get_current_price()
+                    for mil_pos in range(MILEAGE_POSITIONS):
+                        # Get current slider values and price
+                        time.sleep(0.5)  # Wait for price to update
+                        actual_duration, actual_mileage = self._get_slider_values()
+                        price = self._get_current_price()
 
-                    if price and actual_duration and actual_mileage:
-                        key = f"{actual_duration}_{actual_mileage}"
-                        if key not in price_matrix:
-                            price_matrix[key] = price
-                            logger.debug(f"  {actual_duration}mo/{actual_mileage}km = €{price}")
+                        if price and actual_duration and actual_mileage:
+                            key = f"{actual_duration}_{actual_mileage}"
+                            if key not in price_matrix:
+                                price_matrix[key] = price
+                                pbar.set_postfix_str(f"{actual_duration}mo/{actual_mileage}km: €{price}")
+                                logger.debug(f"  {actual_duration}mo/{actual_mileage}km = €{price}")
 
-                    # Move mileage to next position (unless at last position)
-                    if mil_pos < MILEAGE_POSITIONS - 1:
-                        self._move_slider_right('mileage')
-                        time.sleep(0.2)
+                        # Move mileage to next position (unless at last position)
+                        if mil_pos < MILEAGE_POSITIONS - 1:
+                            self._move_slider_right('mileage')
+                            time.sleep(0.2)
 
-                # Move duration to next position (unless at last position)
-                if dur_pos < DURATION_POSITIONS - 1:
-                    self._move_slider_right('duration')
-                    time.sleep(0.3)
+                        pbar.update(1)
+
+                    # Move duration to next position (unless at last position)
+                    if dur_pos < DURATION_POSITIONS - 1:
+                        self._move_slider_right('duration')
+                        time.sleep(0.3)
 
         except Exception as e:
             logger.error(f"Error scraping vehicle prices: {e}")
@@ -780,8 +788,9 @@ class AyvensScraper:
 
             offers = []
 
-            for i, vehicle in enumerate(vehicles):
-                logger.info(f"Processing vehicle {i+1}/{len(vehicles)}: Toyota {vehicle['model']} ({vehicle.get('variant', '')})")
+            for vehicle in tqdm(vehicles, desc="Ayvens Vehicles", unit="vehicle",
+                               bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]'):
+                logger.info(f"Processing: Toyota {vehicle['model']} ({vehicle.get('variant', '')[:50]}...)")
 
                 # Scrape full price matrix by iterating through all slider combinations
                 price_matrix = self._scrape_vehicle_prices(vehicle)
