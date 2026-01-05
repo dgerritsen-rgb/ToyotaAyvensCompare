@@ -131,6 +131,8 @@ class ModelMatcher:
         'select': ['select'],
         'select pro': ['select pro', 'selectpro'],
         'allgrip': ['allgrip', 'all grip', 'all-grip'],
+        'allgrip-e select': ['allgrip-e select', 'allgrip e select', 'all-grip-e select'],
+        'allgrip-e style': ['allgrip-e style', 'allgrip e style', 'all-grip-e style'],
     }
 
     @classmethod
@@ -535,6 +537,9 @@ def extract_ayvens_display_name(ayvens: dict) -> str:
     edition_name = ayvens.get('edition_name', '')
     if edition_name and edition_name.strip():
         name = edition_name.strip().title()
+        # Add AllGrip-e prefix if present in variant but not in edition_name (Suzuki AWD)
+        if 'allgrip' in variant.lower() and 'allgrip' not in edition_name.lower():
+            name = 'AllGrip-e ' + name
         # Add Automaat suffix if present in variant but not in edition_name
         if 'automaat' in variant.lower() and 'automaat' not in edition_name.lower():
             name += ' Automaat'
@@ -690,6 +695,15 @@ def match_suzuki_editions(
     """
     matches = []
 
+    def get_ayvens_edition(ayvens: dict) -> str:
+        """Get edition from Ayvens, including AllGrip-e modifier if present."""
+        edition = ayvens.get('edition_name', '') or ModelMatcher.extract_edition(ayvens.get('variant', ''))
+        variant = ayvens.get('variant', '').lower()
+        # Check if variant indicates AllGrip-e (Suzuki AWD) but edition doesn't
+        if 'allgrip' in variant and edition and 'allgrip' not in edition.lower():
+            return 'allgrip-e ' + edition
+        return edition
+
     # Group Leasys by model
     leasys_by_model = {}
     for l in leasys_offers:
@@ -703,7 +717,7 @@ def match_suzuki_editions(
 
     for ayvens in ayvens_offers:
         ayvens_model = ayvens.get('model', '')
-        ayvens_edition = ayvens.get('edition_name', '') or ModelMatcher.extract_edition(ayvens.get('variant', ''))
+        ayvens_edition = get_ayvens_edition(ayvens)
 
         # Find matching Leasys offers
         leasys_match = None
