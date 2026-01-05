@@ -513,6 +513,15 @@ def extract_ayvens_display_name(ayvens: dict) -> str:
     import re
     variant = ayvens.get('variant', '')
 
+    # First check if edition_name is available and valid (preferred source)
+    edition_name = ayvens.get('edition_name', '')
+    if edition_name and edition_name.strip():
+        name = edition_name.strip().title()
+        # Add Automaat suffix if present in variant but not in edition_name
+        if 'automaat' in variant.lower() and 'automaat' not in edition_name.lower():
+            name += ' Automaat'
+        return name
+
     # Ayvens variant format is typically: "{power} {edition} {doors}d Hybrid..."
     # where edition can be multi-word like "GR-Sport"
 
@@ -541,6 +550,14 @@ def extract_ayvens_display_name(ayvens: dict) -> str:
             edition = edition.title()
         doors = match.group(3)
         return f"Hybrid {power} {edition} {doors}d"
+
+    # Try Suzuki "Smart Hybrid" pattern: "X.X Bstjet Smart Hybrid {edition} [Automaat] {doors}d"
+    match = re.search(r'Smart\s+Hybrid\s+([\w-]+)(?:\s+Automaat)?\s+(\d)d', variant, re.IGNORECASE)
+    if match:
+        edition = match.group(1).title()
+        automaat = ' Automaat' if 'automaat' in variant.lower() else ''
+        doors = match.group(2)
+        return f"Smart Hybrid {edition}{automaat} {doors}d"
 
     # Fallback: just return the first meaningful part
     parts = variant.split()
