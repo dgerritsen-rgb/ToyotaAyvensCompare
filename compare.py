@@ -117,6 +117,7 @@ class ModelMatcher:
         'dynamic': ['dynamic'],
         'executive': ['executive'],
         'gr-sport': ['gr-sport', 'gr sport', 'grsport'],
+        'gr-sport plus pack': ['gr-sport plus pack', 'gr sport plus pack', 'grsport plus pack', 'gr-sport-plus-pack', 'gr sport-plus-pack'],
         'style': ['style'],
         'first edition': ['first edition', 'first'],
         'premium': ['premium'],
@@ -164,8 +165,11 @@ class ModelMatcher:
         import re
         variant_lower = variant.lower()
 
-        # Look for known edition names
-        for edition, aliases in cls.EDITION_ALIASES.items():
+        # Check for "plus pack" modifier first (before base edition matching)
+        has_plus_pack = 'plus-pack' in variant_lower or 'plus pack' in variant_lower
+
+        # Look for known edition names (check longer/more specific ones first)
+        for edition, aliases in sorted(cls.EDITION_ALIASES.items(), key=lambda x: -len(x[0])):
             for alias in aliases:
                 if alias in variant_lower:
                     return edition
@@ -179,6 +183,9 @@ class ModelMatcher:
             if match:
                 edition = match.group(1).replace(' ', '-')
                 if edition.startswith('gr'):
+                    # Check if this is the Plus Pack variant
+                    if has_plus_pack:
+                        return 'gr-sport plus pack'
                     return 'gr-sport'
                 return edition
 
@@ -435,12 +442,23 @@ def match_editions(
             matched_ayvens_ids.add(ayvens_match.get('vehicle_id', id(ayvens_match)))
 
         # Find best Leasys match
+        def get_leasys_edition(l: dict) -> str:
+            """Extract Leasys edition, checking URL for plus-pack info."""
+            edition = l.get('edition_name', '') or l.get('variant', '')
+            offer_url = l.get('offer_url', '').lower()
+            # Check if URL indicates Plus Pack variant
+            if 'plus-pack' in offer_url or 'plus pack' in offer_url:
+                edition_lower = edition.lower()
+                if 'gr' in edition_lower and 'sport' in edition_lower and 'plus' not in edition_lower:
+                    return edition + ' Plus Pack'
+            return edition
+
         leasys_match = find_best_match(
             oem,
             matching_leasys,
             matched_leasys_ids,
             lambda l: l.get('offer_url', id(l)),
-            lambda l: l.get('edition_name', '') or l.get('variant', '')
+            get_leasys_edition
         )
         if leasys_match:
             matched_leasys_ids.add(leasys_match.get('offer_url', id(leasys_match)))
@@ -578,12 +596,19 @@ def extract_leasys_display_name(leasys: dict) -> str:
 
     edition = leasys.get('edition_name', '') or leasys.get('variant', '')
     model = leasys.get('model', '')
+    offer_url = leasys.get('offer_url', '').lower()
+
+    # Check if URL indicates Plus Pack variant
+    has_plus_pack = 'plus-pack' in offer_url or 'plus pack' in offer_url
 
     # Capitalize edition name properly
     if edition:
         # Handle special cases like "Gr Sport" -> "GR-Sport"
         if edition.lower().startswith('gr'):
-            edition = 'GR-Sport'
+            if has_plus_pack and 'plus' not in edition.lower():
+                edition = 'GR-Sport Plus Pack'
+            else:
+                edition = 'GR-Sport'
         else:
             edition = edition.title()
 
