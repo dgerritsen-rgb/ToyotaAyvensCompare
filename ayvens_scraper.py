@@ -983,22 +983,30 @@ def save_progress(offers: List[AyvensOffer], output_file: str = "output/ayvens_t
 
 def main():
     """Main entry point."""
-    output_file = "output/ayvens_toyota_prices.json"
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Scrape Ayvens private lease offers')
+    parser.add_argument('--brand', type=str, default='toyota',
+                        help='Brand to scrape (e.g., toyota, suzuki). Default: toyota')
+    args = parser.parse_args()
+
+    brand = args.brand.lower()
+    output_file = f"output/ayvens_{brand}_prices.json"
 
     scraper = AyvensScraper(headless=True)
 
     try:
-        offers = scraper.scrape_all()
+        offers = scraper.scrape_brand(brand.title())
 
         if offers:
             save_progress(offers, output_file)
 
             print("\n" + "="*60)
-            print("Ayvens Toyota Private Lease Offers")
+            print(f"Ayvens {brand.title()} Private Lease Offers")
             print("="*60)
 
             for offer in offers:
-                print(f"\nToyota {offer.model}")
+                print(f"\n{brand.title()} {offer.model}")
                 print(f"  ID: {offer.vehicle_id}")
                 print(f"  Fuel: {offer.fuel_type}")
                 print(f"  Prices found: {len(offer.price_matrix)}")
