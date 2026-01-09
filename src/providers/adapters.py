@@ -92,9 +92,10 @@ class BaseScraperAdapter(BaseScraper):
         return [offer.to_legacy_dict() for offer in offers]
 
 
-@register_scraper(Provider.TOYOTA_NL)
+# Note: ToyotaScraperAdapter is kept for backward compatibility but
+# ToyotaNLScraper in toyota.py is the primary implementation
 class ToyotaScraperAdapter(BaseScraperAdapter):
-    """Adapter for Toyota.nl scraper."""
+    """Adapter for Toyota.nl scraper (legacy - use ToyotaNLScraper instead)."""
 
     PROVIDER = Provider.TOYOTA_NL
     BRAND = "Toyota"
@@ -257,7 +258,7 @@ class AyvensScraperAdapter(BaseScraperAdapter):
             self.close()
 
 
-@register_scraper(Provider.LEASYS_NL)
+# Note: LeasysNLScraper in leasys.py is the primary implementation
 class LeasysScraperAdapter(BaseScraperAdapter):
     """Adapter for Leasys.com scraper."""
 
