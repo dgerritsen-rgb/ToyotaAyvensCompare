@@ -89,16 +89,77 @@ providers:
 
 ---
 
-## Phase 4: Historical Data Tracking & Change Detection
+## Phase 4: Incremental Scraping & Queue System
 
 | Task | Priority | Description |
 |------|----------|-------------|
-| 4.1 Design historical data storage | High | SQLite or Parquet for time-series data |
-| 4.2 Implement price change detection | High | Track price changes per vehicle over time |
-| 4.3 Add availability tracking | High | Detect when vehicles appear/disappear |
-| 4.4 Create trend analysis utilities | Medium | Price trends, average changes |
-| 4.5 Add structural change detection | Medium | Detect when website structure changes |
-| 4.6 Build historical data export | Low | Export trends to CSV/API |
+| 4.1 Create overview-only scrape mode | High | Scrape listing pages to get vehicle inventory without full price matrix |
+| 4.2 Implement change detection | High | Compare overview data with cache to identify new/changed/removed vehicles |
+| 4.3 Build scrape queue system | High | Queue vehicles needing full price scrape, with priority ordering |
+| 4.4 Add queue persistence | High | Persist queue to disk (JSON/SQLite) for resumable scraping |
+| 4.5 Implement queue worker | Medium | Process queue items with configurable concurrency and rate limiting |
+| 4.6 Add fingerprinting for changes | Medium | Hash vehicle attributes to detect changes (edition name, URL structure) |
+| 4.7 Create freshness policy | Medium | Define max age before forced rescrape (e.g., 7 days) |
+| 4.8 Build queue monitoring/reporting | Low | Report queue depth, estimated time, scrape efficiency stats |
+
+### Proposed Architecture
+
+```
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Overview       │     │  Change          │     │  Scrape         │
+│  Scraper        │────▶│  Detector        │────▶│  Queue          │
+│  (lightweight)  │     │  (compare cache) │     │  (prioritized)  │
+└─────────────────┘     └──────────────────┘     └────────┬────────┘
+                                                          │
+                                                          ▼
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Price Cache    │◀────│  Queue Worker    │◀────│  Full Price     │
+│  (JSON files)   │     │  (rate limited)  │     │  Scraper        │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+```
+
+### Change Detection Logic
+
+```python
+class ChangeDetector:
+    def detect_changes(self, overview: List[Vehicle], cache: List[LeaseOffer]) -> ScrapeQueue:
+        # New vehicles: in overview but not in cache
+        # Removed vehicles: in cache but not in overview
+        # Changed vehicles: fingerprint mismatch (edition name, URL)
+        # Stale vehicles: last_scraped > freshness_threshold
+
+        return ScrapeQueue(
+            new_vehicles=[...],      # Priority 1: scrape immediately
+            changed_vehicles=[...],  # Priority 2: scrape soon
+            stale_vehicles=[...],    # Priority 3: scrape when idle
+        )
+```
+
+### Example Usage
+
+```bash
+# Step 1: Quick overview scan (fast, low traffic)
+python scrape.py --overview-only --provider toyota_nl
+
+# Step 2: Detect what needs updating
+python scrape.py --detect-changes --provider toyota_nl
+
+# Step 3: Process the queue (full price scrapes)
+python scrape.py --process-queue --provider toyota_nl --max-items 10
+```
+
+---
+
+## Phase 5: Historical Data Tracking & Trend Analysis
+
+| Task | Priority | Description |
+|------|----------|-------------|
+| 5.1 Design historical data storage | High | SQLite or Parquet for time-series data |
+| 5.2 Implement price change detection | High | Track price changes per vehicle over time |
+| 5.3 Add availability tracking | High | Detect when vehicles appear/disappear |
+| 5.4 Create trend analysis utilities | Medium | Price trends, average changes |
+| 5.5 Add structural change detection | Medium | Detect when website structure changes |
+| 5.6 Build historical data export | Low | Export trends to CSV/API |
 
 ### Proposed History Schema
 
@@ -114,16 +175,16 @@ class PriceHistory:
 
 ---
 
-## Phase 5: Automated Testing & Monitoring
+## Phase 6: Automated Testing & Monitoring
 
 | Task | Priority | Description |
 |------|----------|-------------|
-| 5.1 Create pytest test suite | High | Unit tests for scrapers, schema validation |
-| 5.2 Add scraper health checks | High | Verify scrapers can connect and extract data |
-| 5.3 Implement data quality validation | High | Price ranges, field completeness, outlier detection |
-| 5.4 Add structural breakage detection | Medium | Alert when expected elements missing |
-| 5.5 Create monitoring dashboard/reports | Medium | Scraper status, last run times, error rates |
-| 5.6 Add alerting system | Low | Email/Slack notifications on failures |
+| 6.1 Create pytest test suite | High | Unit tests for scrapers, schema validation |
+| 6.2 Add scraper health checks | High | Verify scrapers can connect and extract data |
+| 6.3 Implement data quality validation | High | Price ranges, field completeness, outlier detection |
+| 6.4 Add structural breakage detection | Medium | Alert when expected elements missing |
+| 6.5 Create monitoring dashboard/reports | Medium | Scraper status, last run times, error rates |
+| 6.6 Add alerting system | Low | Email/Slack notifications on failures |
 
 ### Test Categories
 
@@ -134,15 +195,15 @@ class PriceHistory:
 
 ---
 
-## Phase 6: Multi-Country Support
+## Phase 7: Multi-Country Support
 
 | Task | Priority | Description |
 |------|----------|-------------|
-| 6.1 Add country abstraction to schema | Medium | Country code in all data models |
-| 6.2 Create country-specific configurations | Medium | Currency, language, URL patterns |
-| 6.3 Implement German Toyota scraper | Medium | toyota.de as proof of concept |
-| 6.4 Add currency handling | Medium | EUR, GBP, CHF support |
-| 6.5 Create localization utilities | Low | Handle German/French/Dutch text parsing |
+| 7.1 Add country abstraction to schema | Medium | Country code in all data models |
+| 7.2 Create country-specific configurations | Medium | Currency, language, URL patterns |
+| 7.3 Implement German Toyota scraper | Medium | toyota.de as proof of concept |
+| 7.4 Add currency handling | Medium | EUR, GBP, CHF support |
+| 7.5 Create localization utilities | Low | Handle German/French/Dutch text parsing |
 
 ### Target Countries (by priority)
 
@@ -154,39 +215,43 @@ class PriceHistory:
 
 ---
 
-## Phase 7: Compliance & Performance
+## Phase 8: Compliance & Performance
 
 | Task | Priority | Description |
 |------|----------|-------------|
-| 7.1 Implement robots.txt checking | High | Parse and respect robots.txt before scraping |
-| 7.2 Add configurable rate limiting | High | Per-provider request throttling |
-| 7.3 Implement exponential backoff | Medium | Retry with increasing delays on errors |
-| 7.4 Add request caching layer | Medium | Cache HTML responses to reduce requests |
-| 7.5 Implement parallel scraping limits | Medium | Max concurrent scrapers |
-| 7.6 Add scraper sandboxing | Low | Isolate scraper execution |
+| 8.1 Implement robots.txt checking | High | Parse and respect robots.txt before scraping |
+| 8.2 Add configurable rate limiting | High | Per-provider request throttling |
+| 8.3 Implement exponential backoff | Medium | Retry with increasing delays on errors |
+| 8.4 Add request caching layer | Medium | Cache HTML responses to reduce requests |
+| 8.5 Implement parallel scraping limits | Medium | Max concurrent scrapers |
+| 8.6 Add scraper sandboxing | Low | Isolate scraper execution |
 
 ---
 
-## Phase 8: Documentation
+## Phase 9: Documentation
 
 | Task | Priority | Description |
 |------|----------|-------------|
-| 8.1 Write architecture overview | High | System design, data flow diagrams |
-| 8.2 Create "Adding New Provider" guide | High | Step-by-step instructions |
-| 8.3 Document configuration options | Medium | All config parameters explained |
-| 8.4 Add API documentation | Medium | If API is planned |
-| 8.5 Create troubleshooting guide | Low | Common issues and solutions |
+| 9.1 Write architecture overview | High | System design, data flow diagrams |
+| 9.2 Create "Adding New Provider" guide | High | Step-by-step instructions |
+| 9.3 Document configuration options | Medium | All config parameters explained |
+| 9.4 Add API documentation | Medium | If API is planned |
+| 9.5 Create troubleshooting guide | Low | Common issues and solutions |
 
 ---
 
 ## Recommended Implementation Order
 
 ```
-Week 1-2:  Phase 1 (Schema) + Phase 7.1-7.2 (robots.txt, rate limiting)
-Week 3-4:  Phase 2 (Framework refactor)
-Week 5-6:  Phase 3 (Config model) + Phase 5.1-5.3 (Testing)
-Week 7-8:  Phase 4 (Historical tracking)
-Week 9+:   Phase 6 (Multi-country) + Phase 8 (Documentation)
+✅ DONE:   Phase 1 (Schema) + Phase 2 (Framework) + Phase 3 (Config)
+
+NEXT:
+Phase 4:   Incremental Scraping & Queue System (reduces traffic to providers)
+Phase 8:   Compliance (robots.txt, rate limiting) - do alongside Phase 4
+Phase 5:   Historical tracking (builds on Phase 4 change detection)
+Phase 6:   Automated testing
+Phase 7:   Multi-country support
+Phase 9:   Documentation
 ```
 
 ---
@@ -194,17 +259,22 @@ Week 9+:   Phase 6 (Multi-country) + Phase 8 (Documentation)
 ## Quick Wins (Can implement immediately)
 
 1. **Add robots.txt checking** - Simple utility, high compliance value
-2. **Create unified schema** - Pydantic models, improves data quality
+2. ~~Create unified schema~~ - ✅ Done
 3. **Convert test files to pytest** - Structure existing tests properly
 4. **Add price range validation** - Catch scraper errors early
 5. **Implement exponential backoff** - Better error handling
+6. **Overview-only scrape mode** - First step of Phase 4, immediate traffic reduction
 
 ---
 
 ## Success Criteria
 
+- [x] Unified data schema implemented
+- [x] Modular scraping framework in place
+- [x] Provider configuration system working
 - [ ] New provider can be added with minimal manual coding
 - [ ] Scraper breakage due to website changes is detected within one run cycle
+- [ ] Incremental scraping reduces provider traffic by 80%+
 - [ ] Benchmark dataset is updated within defined freshness targets per provider
 - [ ] Customers confirm that benchmark data aligns with observed market pricing
 - [ ] Maintenance effort decreases over time as AI assisted generation improves
