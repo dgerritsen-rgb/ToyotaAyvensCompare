@@ -641,7 +641,7 @@ def compare_prices(matches: List[Tuple[dict, Optional[dict], Optional[dict]]], b
             else:
                 oem_url = f"https://www.suzuki.nl/auto/private-lease/{model_slug}/"
         ayvens_url = ayvens.get('offer_url', '') if ayvens else ''
-        leasys_url = leasys.get('offer_url', '') if leasys else ''
+        leasys_url = (leasys.get('offer_url') or leasys.get('source_url', '')) if leasys else ''
 
         for duration in DURATIONS:
             for km in MILEAGES:
@@ -759,7 +759,7 @@ def compare_suzuki_prices(matches: List[Tuple[dict, Optional[dict]]]) -> List[Pr
 
         # Get URLs
         ayvens_url = ayvens.get('offer_url', '')
-        leasys_url = leasys.get('offer_url', '') if leasys else ''
+        leasys_url = (leasys.get('offer_url') or leasys.get('source_url', '')) if leasys else ''
 
         for duration in DURATIONS:
             for km in MILEAGES:
