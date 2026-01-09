@@ -3,6 +3,10 @@ Abstract base class for all lease price scrapers.
 
 This module defines the interface that all provider-specific scrapers
 must implement, ensuring consistent behavior across the framework.
+
+Supports two scraping modes:
+- Full scrape: Discover vehicles + scrape all prices (default)
+- Overview-only: Just discover vehicles for change detection (lightweight)
 """
 
 import logging
@@ -18,6 +22,7 @@ from .schema import (
     Currency,
     PriceMatrix,
 )
+from .queue import VehicleFingerprint, ChangeDetector, ScrapeQueue, Priority
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +269,197 @@ class BaseScraper(ABC):
             List of LeaseOffer objects
         """
         return self.scrape_all(model=model)
+
+    # === Overview/Incremental scraping methods ===
+
+    def scrape_overview(
+        self,
+        model: Optional[str] = None,
+        brand: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Lightweight scrape that only discovers vehicles without prices.
+
+        This is much faster than scrape_all() and generates minimal traffic.
+        Use this for change detection and queue building.
+
+        Args:
+            model: Optional model name filter
+            brand: Optional brand name filter
+
+        Returns:
+            List of vehicle dictionaries (without price matrices)
+        """
+        try:
+            logger.info(f"Starting overview scrape for {self.PROVIDER.value if self.PROVIDER else 'unknown'}")
+
+            # Pre-scrape setup
+            self.pre_scrape_hook()
+
+            # Discover vehicles (lightweight operation)
+            logger.info("Discovering vehicles (overview only)...")
+            vehicles = self.discover_vehicles()
+            logger.info(f"Found {len(vehicles)} vehicles")
+
+            # Apply filters
+            if model or brand:
+                vehicles = self.filter_vehicles(vehicles, model=model, brand=brand)
+                logger.info(f"Filtered to {len(vehicles)} vehicles")
+
+            return vehicles
+
+        except Exception as e:
+            logger.error(f"Overview scrape failed: {e}")
+            raise
+        finally:
+            self.close()
+
+    def detect_changes(
+        self,
+        model: Optional[str] = None,
+        brand: Optional[str] = None,
+        freshness_days: int = 7,
+    ) -> 'ChangeDetectionResult':
+        """
+        Scan for changes compared to cached data.
+
+        Performs an overview scrape and compares with existing cache
+        to identify new, changed, and stale vehicles.
+
+        Args:
+            model: Optional model filter
+            brand: Optional brand filter
+            freshness_days: Days before data is considered stale
+
+        Returns:
+            ChangeDetectionResult with categorized vehicles
+        """
+        from .queue import ChangeDetector, ChangeDetectionResult
+
+        # Get current overview
+        vehicles = self.scrape_overview(model=model, brand=brand)
+
+        # Detect changes against cache
+        detector = ChangeDetector(freshness_days=freshness_days)
+        provider = self.PROVIDER.value if self.PROVIDER else 'unknown'
+
+        result = detector.detect_changes(vehicles, provider, brand=brand)
+
+        logger.info(f"Change detection: {result.summary}")
+        return result
+
+    def build_queue(
+        self,
+        model: Optional[str] = None,
+        brand: Optional[str] = None,
+        freshness_days: int = 7,
+    ) -> ScrapeQueue:
+        """
+        Build a scrape queue based on change detection.
+
+        Performs overview scan, detects changes, and creates a prioritized
+        queue of vehicles that need price scraping.
+
+        Args:
+            model: Optional model filter
+            brand: Optional brand filter
+            freshness_days: Days before data is considered stale
+
+        Returns:
+            ScrapeQueue populated with vehicles needing scraping
+        """
+        # Get overview
+        vehicles = self.scrape_overview(model=model, brand=brand)
+
+        # Detect changes
+        detector = ChangeDetector(freshness_days=freshness_days)
+        provider = self.PROVIDER.value if self.PROVIDER else 'unknown'
+        result = detector.detect_changes(vehicles, provider, brand=brand)
+
+        # Create queue
+        queue = detector.create_queue_from_changes(result, vehicles, provider)
+
+        logger.info(
+            f"Queue built: {queue.get_pending_count(provider)} items "
+            f"({result.summary})"
+        )
+        return queue
+
+    def process_queue(
+        self,
+        queue: Optional[ScrapeQueue] = None,
+        max_items: Optional[int] = None,
+    ) -> List[LeaseOffer]:
+        """
+        Process items from the scrape queue.
+
+        Pulls vehicles from the queue and scrapes their full price matrices.
+        Items are marked as completed or failed as they're processed.
+
+        Args:
+            queue: ScrapeQueue to process (creates new one if None)
+            max_items: Maximum items to process (None = all)
+
+        Returns:
+            List of LeaseOffer objects from successfully scraped items
+        """
+        if queue is None:
+            queue = ScrapeQueue()
+
+        provider = self.PROVIDER.value if self.PROVIDER else 'unknown'
+        offers = []
+        processed = 0
+
+        try:
+            self.pre_scrape_hook()
+
+            while True:
+                # Check if we've hit the limit
+                if max_items and processed >= max_items:
+                    logger.info(f"Reached max items limit ({max_items})")
+                    break
+
+                # Get next item
+                item = queue.get_next(provider)
+                if item is None:
+                    logger.info("Queue empty, scraping complete")
+                    break
+
+                vehicle_name = (
+                    f"{item.fingerprint.brand} {item.fingerprint.model} "
+                    f"{item.fingerprint.edition_name}"
+                ).strip()
+
+                logger.info(
+                    f"Processing queue item {processed + 1}: {vehicle_name} "
+                    f"(priority: {item.priority.name}, reason: {item.reason})"
+                )
+
+                try:
+                    offer = self.scrape_vehicle_prices(item.vehicle_data)
+                    if offer:
+                        offers.append(offer)
+                        queue.complete(item)
+                        logger.info(f"Completed: {vehicle_name}")
+                    else:
+                        queue.fail(item, "No price data returned")
+                        logger.warning(f"No data for: {vehicle_name}")
+                except Exception as e:
+                    queue.fail(item, str(e))
+                    logger.error(f"Error scraping {vehicle_name}: {e}")
+
+                processed += 1
+
+            self.post_scrape_hook(offers)
+            logger.info(f"Processed {processed} items, scraped {len(offers)} offers")
+
+        except Exception as e:
+            logger.error(f"Queue processing failed: {e}")
+            raise
+        finally:
+            self.close()
+
+        return offers
 
     # === Utility methods ===
 

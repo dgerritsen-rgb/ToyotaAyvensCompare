@@ -65,6 +65,16 @@ from .config import (
     initialize_default_configs,
 )
 
+from .queue import (
+    ScrapeQueue,
+    QueueItem,
+    VehicleFingerprint,
+    ChangeDetector,
+    ChangeDetectionResult,
+    Priority,
+    QueueItemStatus,
+)
+
 __all__ = [
     # Schema classes
     "LeaseOffer",
@@ -120,4 +130,12 @@ __all__ = [
     "list_configured_providers",
     "get_default_configs",
     "initialize_default_configs",
+    # Queue system
+    "ScrapeQueue",
+    "QueueItem",
+    "VehicleFingerprint",
+    "ChangeDetector",
+    "ChangeDetectionResult",
+    "Priority",
+    "QueueItemStatus",
 ]
