@@ -144,7 +144,7 @@ class ToyotaScraperAdapter(BaseScraperAdapter):
             self.close()
 
 
-@register_scraper(Provider.SUZUKI_NL)
+# Note: SuzukiNLScraper in suzuki.py is the primary implementation
 class SuzukiScraperAdapter(BaseScraperAdapter):
     """Adapter for Suzuki.nl scraper."""
 
@@ -195,7 +195,7 @@ class SuzukiScraperAdapter(BaseScraperAdapter):
             self.close()
 
 
-@register_scraper(Provider.AYVENS_NL)
+# Note: AyvensNLScraper in ayvens.py is the primary implementation
 class AyvensScraperAdapter(BaseScraperAdapter):
     """Adapter for Ayvens.com scraper."""
 

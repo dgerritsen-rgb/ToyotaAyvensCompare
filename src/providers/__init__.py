@@ -14,6 +14,8 @@ The new implementations use:
 # New framework-native implementations
 from .toyota import ToyotaNLScraper
 from .leasys import LeasysNLScraper
+from .suzuki import SuzukiNLScraper
+from .ayvens import AyvensNLScraper
 
 # Legacy adapters (for backward compatibility)
 from .adapters import (
@@ -28,6 +30,8 @@ __all__ = [
     # New implementations
     "ToyotaNLScraper",
     "LeasysNLScraper",
+    "SuzukiNLScraper",
+    "AyvensNLScraper",
     # Legacy adapters
     "ToyotaScraperAdapter",
     "SuzukiScraperAdapter",
