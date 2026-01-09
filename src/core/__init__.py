@@ -75,6 +75,12 @@ from .queue import (
     QueueItemStatus,
 )
 
+from .robots import (
+    can_fetch,
+    check_provider_compliance,
+    verify_all_providers,
+)
+
 __all__ = [
     # Schema classes
     "LeaseOffer",
@@ -138,4 +144,8 @@ __all__ = [
     "ChangeDetectionResult",
     "Priority",
     "QueueItemStatus",
+    # Robots.txt compliance
+    "can_fetch",
+    "check_provider_compliance",
+    "verify_all_providers",
 ]

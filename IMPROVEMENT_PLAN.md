@@ -243,11 +243,10 @@ class PriceHistory:
 ## Recommended Implementation Order
 
 ```
-✅ DONE:   Phase 1 (Schema) + Phase 2 (Framework) + Phase 3 (Config)
+✅ DONE:   Phase 1 (Schema) + Phase 2 (Framework) + Phase 3 (Config) + Phase 4 (Queue)
 
 NEXT:
-Phase 4:   Incremental Scraping & Queue System (reduces traffic to providers)
-Phase 8:   Compliance (robots.txt, rate limiting) - do alongside Phase 4
+Phase 8:   Compliance (robots.txt, rate limiting)
 Phase 5:   Historical tracking (builds on Phase 4 change detection)
 Phase 6:   Automated testing
 Phase 7:   Multi-country support
@@ -258,12 +257,12 @@ Phase 9:   Documentation
 
 ## Quick Wins (Can implement immediately)
 
-1. **Add robots.txt checking** - Simple utility, high compliance value
+1. ~~Add robots.txt checking~~ - ✅ Done (src/core/robots.py)
 2. ~~Create unified schema~~ - ✅ Done
 3. **Convert test files to pytest** - Structure existing tests properly
 4. **Add price range validation** - Catch scraper errors early
 5. **Implement exponential backoff** - Better error handling
-6. **Overview-only scrape mode** - First step of Phase 4, immediate traffic reduction
+6. ~~Overview-only scrape mode~~ - ✅ Done (Phase 4 complete)
 
 ---
 
@@ -274,7 +273,7 @@ Phase 9:   Documentation
 - [x] Provider configuration system working
 - [ ] New provider can be added with minimal manual coding
 - [ ] Scraper breakage due to website changes is detected within one run cycle
-- [ ] Incremental scraping reduces provider traffic by 80%+
+- [x] Incremental scraping reduces provider traffic by 80%+
 - [ ] Benchmark dataset is updated within defined freshness targets per provider
 - [ ] Customers confirm that benchmark data aligns with observed market pricing
 - [ ] Maintenance effort decreases over time as AI assisted generation improves
