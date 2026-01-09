@@ -55,13 +55,17 @@ class VehicleFingerprint(BaseModel):
 
     @property
     def unique_key(self) -> str:
-        """Generate unique key for this vehicle."""
+        """Generate unique key for this vehicle.
+
+        Uses only provider, brand, model, and edition_name for matching.
+        variant_slug is NOT included to ensure cache matching works
+        regardless of whether the cache has this field.
+        """
         parts = [
             self.provider,
             self.brand.lower().replace(' ', '-'),
             self.model.lower().replace(' ', '-'),
             self.edition_name.lower().replace(' ', '-') if self.edition_name else '',
-            self.variant_slug.lower() if self.variant_slug else '',
         ]
         return '_'.join(filter(None, parts))
 
