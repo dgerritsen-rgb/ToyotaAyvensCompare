@@ -295,6 +295,51 @@ def cmd_clear(args):
     return 0
 
 
+def cmd_quick_check(args):
+    """Fast hash-based change detection using trim counts."""
+    if args.provider != 'leasys_nl':
+        print(f"Quick check only supported for leasys_nl (got: {args.provider})")
+        return 1
+
+    if not args.brand:
+        print("Error: --brand is required for quick check")
+        return 1
+
+    print(f"\n=== Quick Check: {args.provider} / {args.brand} ===\n")
+
+    try:
+        from src.core.browser import BrowserManager
+        from src.core.quick_check import quick_check_leasys
+
+        browser = BrowserManager(headless=not args.visible)
+        browser.get('https://store.leasys.com')
+        browser.handle_cookie_consent()
+
+        result = quick_check_leasys(browser, args.brand)
+
+        print(f"Hash (current):  {result.hash_current}")
+        print(f"Hash (cached):   {result.hash_cached or 'none'}")
+        print(f"Changed:         {result.changed}")
+        print(f"Check time:      {result.check_time:.1f}s")
+        print(f"\nModel trim counts:")
+        for model, count in sorted(result.counts.items()):
+            details = result.details.get(model, {})
+            trim_names = details.get('trim_names', [])
+            print(f"  {model}: {count} trims {trim_names}")
+
+        if result.changed:
+            print("\n>>> Changes detected! Run 'detect' for full analysis.")
+        else:
+            print("\n>>> No changes detected. Full scrape not needed.")
+
+        browser.driver.quit()
+        return 0
+
+    except Exception as e:
+        logger.error(f"Quick check failed: {e}")
+        return 1
+
+
 def cmd_add(args):
     """Manually add items to the queue (for testing)."""
     scraper_class = ScraperRegistry.get_scraper_class(args.provider)
@@ -393,6 +438,11 @@ def main():
     clear.add_argument('--force', '-f', action='store_true',
                       help='Skip confirmation')
     clear.set_defaults(func=cmd_clear)
+
+    # Quick check command
+    quick = subparsers.add_parser('quick-check', parents=[common],
+                                   help='Fast hash-based change detection (~20s)')
+    quick.set_defaults(func=cmd_quick_check)
 
     # Add command (for testing)
     add = subparsers.add_parser('add', parents=[common],
