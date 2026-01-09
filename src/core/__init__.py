@@ -30,6 +30,25 @@ from .loader import (
     get_offer_stats,
 )
 
+from .browser import (
+    BrowserManager,
+    browser_session,
+)
+
+from .base_scraper import (
+    BaseScraper,
+    MultiModelScraper,
+    MultiBrandScraper,
+)
+
+from .registry import (
+    ScraperRegistry,
+    register_scraper,
+    get_scraper,
+    list_providers,
+    scrape_provider,
+)
+
 __all__ = [
     # Schema classes
     "LeaseOffer",
@@ -58,4 +77,17 @@ __all__ = [
     "export_unified_json",
     "export_all_unified",
     "get_offer_stats",
+    # Browser utilities
+    "BrowserManager",
+    "browser_session",
+    # Base scraper classes
+    "BaseScraper",
+    "MultiModelScraper",
+    "MultiBrandScraper",
+    # Registry
+    "ScraperRegistry",
+    "register_scraper",
+    "get_scraper",
+    "list_providers",
+    "scrape_provider",
 ]
