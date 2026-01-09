@@ -91,7 +91,7 @@ class LeasysNLScraper(MultiBrandScraper):
                     'model_slug': m['slug'],
                     'model_name': m['name'],
                     'brand': brand,
-                    'url': f"{self.BASE_URL}/nl/private/brands/Suzuki/{m['slug']}",
+                    'url': f"{self.BASE_URL}/nl/private/brands/Suzuki/{m['slug']}?vehicleSources=N",
                 }
                 for m in self.KNOWN_SUZUKI_MODELS
             ]
@@ -124,6 +124,12 @@ class LeasysNLScraper(MultiBrandScraper):
         try:
             self.browser.get(model['url'])
             self.browser.handle_cookie_consent()
+            time.sleep(3)
+
+            # Scroll down to trigger lazy loading of vehicle cards
+            self.browser.driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 2)")
+            time.sleep(1)
+            self.browser.driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(2)
 
             soup = BeautifulSoup(self.browser.page_source, 'lxml')
@@ -139,32 +145,48 @@ class LeasysNLScraper(MultiBrandScraper):
             for link in links:
                 href = link.get('href', '')
                 edition_slug = None
+                variant_slug = None
 
-                # Pattern 1: /nl/private/{brand-slug}/{model-slug}/{edition}/...
-                pattern1 = rf'/nl/private/{re.escape(brand_slug)}/{re.escape(model_slug_normalized)}/([a-z0-9-]+)/'
+                # Pattern 1: /nl/private/{brand-slug}/{model-slug}/{edition}/{variant}/...
+                # This captures both edition (comfort/select/style) and variant (engine/transmission)
+                pattern1 = rf'/nl/private/{re.escape(brand_slug)}/{re.escape(model_slug_normalized)}/([a-z0-9-]+)/([a-z0-9-]+)/'
                 match = re.search(pattern1, href, re.IGNORECASE)
                 if match:
                     edition_slug = match.group(1).lower()
+                    variant_slug = match.group(2).lower()
 
-                # Pattern 2: /nl/private/brands/{Brand}/{Model}/{edition}/...
+                # Pattern 2: /nl/private/brands/{Brand}/{Model}/{edition}/{variant}/...
                 if not edition_slug:
                     model_slug_url = re.escape(model.get('model_slug', model['model_name']))
-                    pattern2 = rf'/nl/private/brands/[^/]+/{model_slug_url}/([a-z0-9-]+)/'
+                    pattern2 = rf'/nl/private/brands/[^/]+/{model_slug_url}/([a-z0-9-]+)/([a-z0-9-]+)/'
                     match = re.search(pattern2, href, re.IGNORECASE)
                     if match:
                         edition_slug = match.group(1).lower()
+                        variant_slug = match.group(2).lower()
 
-                if edition_slug and edition_slug not in seen:
+                # Create unique key from edition + variant
+                unique_key = f"{edition_slug}_{variant_slug}" if variant_slug else edition_slug
+
+                if edition_slug and unique_key not in seen:
                     # Skip if it's not a new car (factory)
                     if '/factory/' not in href:
                         continue
 
-                    seen.add(edition_slug)
+                    seen.add(unique_key)
                     full_url = self.BASE_URL + href if href.startswith('/') else href
+
+                    # Build descriptive edition name including transmission info
                     edition_name = edition_slug.replace('-', ' ').title()
+                    if variant_slug:
+                        # Extract transmission type from variant
+                        if 'cvt' in variant_slug or 'automaat' in variant_slug:
+                            edition_name += ' Automaat'
+                        if 'allgrip' in variant_slug:
+                            edition_name += ' Allgrip'
 
                     editions.append({
                         'edition_slug': edition_slug,
+                        'variant_slug': variant_slug,
                         'edition_name': edition_name,
                         'url': full_url,
                         'model_name': model['model_name'],
