@@ -1,0 +1,135 @@
+{
+  "providers": [
+    {
+      "id": "toyota_nl",
+      "name": "Toyota Netherlands",
+      "country": "NL",
+      "currency": "EUR",
+      "scraper_type": "selenium",
+      "is_oem": true,
+      "default_brand": "Toyota",
+      "urls": {
+        "base_url": "https://www.toyota.nl",
+        "overview_url": "https://www.toyota.nl/private-lease/modellen",
+        "model_url_template": "{base}/private-lease/modellen/{model}"
+      },
+      "rate_limit": {
+        "requests_per_minute": 20,
+        "delay_between_pages": 2.0,
+        "delay_between_requests": 1.0,
+        "max_retries": 3,
+        "retry_delay": 5.0
+      },
+      "price_matrix": {
+        "durations": [24, 36, 48, 60, 72],
+        "mileages": [5000, 10000, 15000, 20000, 25000, 30000]
+      },
+      "update_frequency": "daily",
+      "cache_ttl_hours": 48,
+      "features": {
+        "supports_filtering": true,
+        "has_price_configurator": true,
+        "requires_javascript": true,
+        "has_api": false
+      },
+      "robots_txt_checked": true
+    },
+    {
+      "id": "suzuki_nl",
+      "name": "Suzuki Netherlands",
+      "country": "NL",
+      "currency": "EUR",
+      "scraper_type": "selenium",
+      "is_oem": true,
+      "default_brand": "Suzuki",
+      "urls": {
+        "base_url": "https://www.suzuki.nl",
+        "overview_url": "https://www.suzuki.nl/auto/private-lease/modellen",
+        "model_url_template": "{base}/auto/private-lease/{model}"
+      },
+      "rate_limit": {
+        "requests_per_minute": 20,
+        "delay_between_pages": 2.0,
+        "delay_between_requests": 1.0,
+        "max_retries": 3,
+        "retry_delay": 5.0
+      },
+      "price_matrix": {
+        "durations": [24, 36, 48, 60, 72],
+        "mileages": [5000, 10000, 15000, 20000, 25000, 30000]
+      },
+      "update_frequency": "daily",
+      "cache_ttl_hours": 48,
+      "robots_txt_checked": true
+    },
+    {
+      "id": "ayvens_nl",
+      "name": "Ayvens Netherlands",
+      "country": "NL",
+      "currency": "EUR",
+      "scraper_type": "selenium",
+      "is_aggregator": true,
+      "urls": {
+        "base_url": "https://www.ayvens.com",
+        "overview_url": "https://www.ayvens.com/nl-nl/private-lease-showroom/"
+      },
+      "brands": [
+        {"name": "Toyota", "slug": "toyota", "enabled": true},
+        {"name": "Suzuki", "slug": "suzuki", "enabled": true},
+        {"name": "Fiat", "slug": "fiat", "enabled": false},
+        {"name": "Peugeot", "slug": "peugeot", "enabled": false},
+        {"name": "Citroen", "slug": "citroen", "enabled": false}
+      ],
+      "rate_limit": {
+        "requests_per_minute": 30,
+        "delay_between_pages": 1.5,
+        "delay_between_requests": 1.0,
+        "max_retries": 3,
+        "retry_delay": 5.0
+      },
+      "price_matrix": {
+        "durations": [24, 36, 48, 60, 72],
+        "mileages": [5000, 7500, 10000, 15000, 20000, 25000, 30000]
+      },
+      "update_frequency": "daily",
+      "cache_ttl_hours": 48,
+      "robots_txt_checked": true,
+      "notes": "Ayvens offers 7 mileage options including 7500 km"
+    },
+    {
+      "id": "leasys_nl",
+      "name": "Leasys Netherlands",
+      "country": "NL",
+      "currency": "EUR",
+      "scraper_type": "selenium",
+      "is_aggregator": true,
+      "urls": {
+        "base_url": "https://store.leasys.com",
+        "overview_url": "https://store.leasys.com/nl/private/"
+      },
+      "brands": [
+        {"name": "Toyota", "slug": "toyota", "enabled": true},
+        {"name": "Suzuki", "slug": "suzuki", "enabled": true},
+        {"name": "Fiat", "slug": "fiat", "enabled": false},
+        {"name": "Alfa Romeo", "slug": "alfa-romeo", "enabled": false},
+        {"name": "Jeep", "slug": "jeep", "enabled": false},
+        {"name": "Abarth", "slug": "abarth", "enabled": false}
+      ],
+      "rate_limit": {
+        "requests_per_minute": 20,
+        "delay_between_pages": 2.0,
+        "delay_between_requests": 1.0,
+        "max_retries": 3,
+        "retry_delay": 5.0
+      },
+      "price_matrix": {
+        "durations": [24, 36, 48, 60, 72],
+        "mileages": [5000, 10000, 15000, 20000]
+      },
+      "update_frequency": "daily",
+      "cache_ttl_hours": 48,
+      "robots_txt_checked": true,
+      "notes": "Leasys only offers mileages up to 20,000 km/year (4 options vs 6 for others)"
+    }
+  ]
+}

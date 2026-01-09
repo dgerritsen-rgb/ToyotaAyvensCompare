@@ -49,6 +49,22 @@ from .registry import (
     scrape_provider,
 )
 
+from .config import (
+    ProviderConfig,
+    RateLimitConfig,
+    PriceMatrixConfig,
+    UrlConfig,
+    BrandConfig,
+    ScraperType,
+    UpdateFrequency,
+    ConfigManager,
+    get_config_manager,
+    get_provider_config,
+    list_configured_providers,
+    get_default_configs,
+    initialize_default_configs,
+)
+
 __all__ = [
     # Schema classes
     "LeaseOffer",
@@ -90,4 +106,18 @@ __all__ = [
     "get_scraper",
     "list_providers",
     "scrape_provider",
+    # Config
+    "ProviderConfig",
+    "RateLimitConfig",
+    "PriceMatrixConfig",
+    "UrlConfig",
+    "BrandConfig",
+    "ScraperType",
+    "UpdateFrequency",
+    "ConfigManager",
+    "get_config_manager",
+    "get_provider_config",
+    "list_configured_providers",
+    "get_default_configs",
+    "initialize_default_configs",
 ]
