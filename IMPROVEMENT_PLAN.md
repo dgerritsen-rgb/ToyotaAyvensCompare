@@ -101,6 +101,7 @@ providers:
 | 4.6 Add fingerprinting for changes | Medium | Hash vehicle attributes to detect changes (edition name, URL structure) |
 | 4.7 Create freshness policy | Medium | Define max age before forced rescrape (e.g., 7 days) |
 | 4.8 Build queue monitoring/reporting | Low | Report queue depth, estimated time, scrape efficiency stats |
+| 4.9 Provider feature parity | High | Ensure all providers support: quick-check, overview, detect, queue processing |
 
 ### Proposed Architecture
 
@@ -138,15 +139,33 @@ class ChangeDetector:
 ### Example Usage
 
 ```bash
+# Step 0: Fast hash check (~20s) - skip full detect if no changes
+python queue_scrape.py quick-check -p leasys_nl -b Suzuki
+
 # Step 1: Quick overview scan (fast, low traffic)
-python scrape.py --overview-only --provider toyota_nl
+python queue_scrape.py overview -p toyota_nl
 
 # Step 2: Detect what needs updating
-python scrape.py --detect-changes --provider toyota_nl
+python queue_scrape.py detect -p toyota_nl
 
 # Step 3: Process the queue (full price scrapes)
-python scrape.py --process-queue --provider toyota_nl --max-items 10
+python queue_scrape.py process -p toyota_nl --max-items 10
 ```
+
+### Provider Feature Parity (Task 4.9)
+
+| Feature | toyota_nl | suzuki_nl | ayvens_nl | leasys_nl |
+|---------|-----------|-----------|-----------|-----------|
+| quick-check | ❌ | ❌ | ❌ | ✅ |
+| overview | ✅ | ✅ | ✅ | ✅ |
+| detect | ✅ | ✅ | ✅ | ✅ |
+| build queue | ✅ | ✅ | ✅ | ✅ |
+| process queue | ✅ | ✅ | ✅ | ✅ |
+
+**To achieve parity:**
+- Implement `quick-check` for Toyota, Suzuki, Ayvens (find `__NEXT_DATA__` or similar fast endpoints)
+- Ensure consistent fingerprinting across all providers
+- Standardize cache file locations and formats
 
 ---
 
