@@ -156,7 +156,7 @@ def main():
             results['toyota'] = run_toyota_scraper()
 
         if args.provider in ['leasys', 'all']:
-            results['leasys_toyota'] = run_leasys_scraper('Toyota')
+            results[f'leasys_{args.brand.lower()}'] = run_leasys_scraper(args.brand)
 
         if args.provider in ['suzuki', 'all']:
             results['suzuki'] = run_suzuki_scraper()
