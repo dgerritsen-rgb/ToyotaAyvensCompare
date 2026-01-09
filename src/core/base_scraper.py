@@ -293,6 +293,11 @@ class BaseScraper(ABC):
         try:
             logger.info(f"Starting overview scrape for {self.PROVIDER.value if self.PROVIDER else 'unknown'}")
 
+            # For MultiBrandScraper, set brand filter BEFORE discovery to avoid
+            # scraping all brands then filtering (which is slow)
+            if brand and hasattr(self, 'brand_filter'):
+                self.brand_filter = brand
+
             # Pre-scrape setup
             self.pre_scrape_hook()
 
@@ -301,9 +306,9 @@ class BaseScraper(ABC):
             vehicles = self.discover_vehicles()
             logger.info(f"Found {len(vehicles)} vehicles")
 
-            # Apply filters
-            if model or brand:
-                vehicles = self.filter_vehicles(vehicles, model=model, brand=brand)
+            # Apply model filter (brand already applied during discovery for MultiBrandScraper)
+            if model:
+                vehicles = self.filter_vehicles(vehicles, model=model)
                 logger.info(f"Filtered to {len(vehicles)} vehicles")
 
             return vehicles
