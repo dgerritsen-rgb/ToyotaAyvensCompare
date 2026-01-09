@@ -1040,7 +1040,7 @@ def main():
 
     # Check if we have minimum data for comparison
     has_toyota_comparison = toyota_data and (ayvens_toyota_data or leasys_toyota_data)
-    has_suzuki_comparison = ayvens_suzuki_data and leasys_suzuki_data  # Suzuki compares Ayvens vs Leasys only
+    has_suzuki_comparison = suzuki_data and (ayvens_suzuki_data or leasys_suzuki_data)  # Suzuki now includes OEM prices
 
     if not has_toyota_comparison and not has_suzuki_comparison:
         print("\nError: Insufficient cached data for comparison.")
@@ -1061,27 +1061,16 @@ def main():
         toyota_comparisons = compare_prices(toyota_matches, brand='toyota')
         all_comparisons.extend(toyota_comparisons)
 
-    # Suzuki comparisons (Ayvens vs Leasys - no OEM configurator)
+    # Suzuki comparisons (OEM vs Ayvens vs Leasys)
     if has_suzuki_comparison:
         print("Matching Suzuki editions...")
-        # For Suzuki, we directly compare Ayvens to Leasys without OEM reference
-        suzuki_matches = match_suzuki_editions(
-            ayvens_suzuki_data,
-            leasys_suzuki_data or []
+        suzuki_matches = match_editions(
+            suzuki_data,
+            ayvens_suzuki_data or [],
+            leasys_suzuki_data or [],
+            brand='suzuki'
         )
-
-        # Check if there are any matches
-        matches_with_leasys = sum(1 for _, l in suzuki_matches if l)
-        if matches_with_leasys == 0:
-            # Get unique models from each provider
-            ayvens_models = set(a.get('model', '').lower() for a in ayvens_suzuki_data)
-            leasys_models = set(l.get('model', '').lower() for l in (leasys_suzuki_data or []))
-            print(f"\n  Note: No matching Suzuki models between providers:")
-            print(f"    Ayvens offers: {', '.join(sorted(m.title() for m in ayvens_models))}")
-            print(f"    Leasys offers: {', '.join(sorted(m.title() for m in leasys_models))}")
-            print("    (Different models - no price comparison possible)\n")
-
-        suzuki_comparisons = compare_suzuki_prices(suzuki_matches)
+        suzuki_comparisons = compare_prices(suzuki_matches, brand='suzuki')
         all_comparisons.extend(suzuki_comparisons)
 
     # Generate reports
