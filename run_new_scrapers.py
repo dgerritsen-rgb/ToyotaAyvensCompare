@@ -162,7 +162,7 @@ def main():
             results['suzuki'] = run_suzuki_scraper()
 
         if args.provider in ['ayvens', 'all']:
-            results['ayvens_toyota'] = run_ayvens_scraper('Toyota')
+            results[f'ayvens_{args.brand.lower()}'] = run_ayvens_scraper(args.brand)
 
         print("\n" + "="*60)
         print("SCRAPING COMPLETE")
